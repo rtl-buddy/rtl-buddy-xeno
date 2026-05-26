@@ -10,6 +10,7 @@ on:
       - '.python-version'
       - 'src/**/*.py'
       - 'tests/**/*.py'
+      - 'tests/fixtures/**'
   pull_request:
     branches: [main]
     paths:
@@ -19,6 +20,13 @@ on:
       - '.python-version'
       - 'src/**/*.py'
       - 'tests/**/*.py'
+      - 'tests/fixtures/**'
+
+# Pinned to match rtl-buddy-view's vendored binary (view#109 sets this
+# tag in src/rtl_buddy_view/_verible_install.py). Rotate in lockstep
+# when bumping view's pin.
+env:
+  VERIBLE_VERSION: "v0.0-4053-g89d4d98a"
 
 jobs:
   pytest:
@@ -35,8 +43,39 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Install test dependencies
-        run: uv sync --group test --python ${{ matrix.python-version }}
+      # Pull in everything: the test group plus both optional-deps
+      # (`[verible]` for the cst.py facade and ASSIGN_DROP; `[slang]`
+      # for the pyslang elaboration gate in test_mutant_validity.py).
+      # The validity test skips gracefully if Verible isn't on PATH,
+      # so a missing binary doesn't fail CI — but we install it below
+      # to actually exercise the gate.
+      - name: Install test + all extras
+        run: uv sync --group test --all-extras --python ${{ matrix.python-version }}
+
+      # Cache the Verible binary keyed on the pinned version above so
+      # we pay the download cost once per version bump, not once per
+      # CI run. Verible's prebuilt releases live under
+      # github.com/chipsalliance/verible/releases.
+      - name: Cache Verible
+        id: cache-verible
+        uses: actions/cache@v4
+        with:
+          path: vendor/verible
+          key: verible-${{ runner.os }}-${{ env.VERIBLE_VERSION }}
+
+      - name: Install Verible (cache miss only)
+        if: steps.cache-verible.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p vendor/verible
+          url="https://github.com/chipsalliance/verible/releases/download/${VERIBLE_VERSION}/verible-${VERIBLE_VERSION}-linux-static-x86_64.tar.gz"
+          curl -sSL "$url" | tar xz -C vendor/verible --strip-components=1
+          ls vendor/verible/bin
+
+      - name: Add Verible to PATH
+        run: echo "$(pwd)/vendor/verible/bin" >> $GITHUB_PATH
+
+      - name: Verify Verible is on PATH
+        run: verible-verilog-syntax --version
 
       - name: Run pytest
         run: uv run --python ${{ matrix.python-version }} pytest -q

@@ -59,6 +59,8 @@ _FIXTURES: dict[MutationKind, Path] = {
     MutationKind.COND_CONST: _FIXTURES_DIR / "expressions.sv",
     MutationKind.PORT_BINDING_SWAP: _FIXTURES_DIR / "instances_and_resets.sv",
     MutationKind.RESET_POLARITY_FLIP: _FIXTURES_DIR / "instances_and_resets.sv",
+    MutationKind.SYNC_CHAIN_DEPTH_PERTURB: _FIXTURES_DIR / "sync_and_slices.sv",
+    MutationKind.BIT_EXTRACT_PERMUTE: _FIXTURES_DIR / "sync_and_slices.sv",
 }
 
 
@@ -156,8 +158,6 @@ def test_every_mutant_elaborates_with_pyslang(
     mutants = list(mutator.generate(kinds=[kind], count=999, seed=0))
     assert mutants, f"{kind.value}: fixture {fixture.name} produced zero mutants"
 
-    import pyslang  # type: ignore[import-not-found]
-
     failures: list[str] = []
     for i, mutant in enumerate(mutants):
         try:
@@ -169,12 +169,10 @@ def test_every_mutant_elaborates_with_pyslang(
                 f"{type(exc).__name__}: {exc}"
             )
             continue
-        bad = [
-            d
-            for d in diagnostics
-            if d.severity
-            in (pyslang.DiagnosticSeverity.Error, pyslang.DiagnosticSeverity.Fatal)
-        ]
+        # pyslang.Diagnostic exposes ``isError()`` (method, no severity enum
+        # surface as of pyslang 10.x). Anything that returns True is fatal
+        # to the mutant; warnings (WidthExpand, etc.) are tolerated.
+        bad = [d for d in diagnostics if d.isError()]
         if bad:
             failures.append(
                 f"  mutant #{i} ({mutant.diff_summary}): "

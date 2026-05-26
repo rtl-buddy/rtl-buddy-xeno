@@ -26,31 +26,26 @@ from rtl_buddy_xeno.operators import (
     _arith_flip,
     _assign_drop,
     _attribute_toggle,
+    _bit_extract_permute,
     _bit_op_flip,
     _clock_polarity_swap,
     _cond_const,
     _cond_negate,
     _port_binding_swap,
     _reset_polarity_flip,
-    _stubs,
+    _sync_chain_depth_perturb,
 )
 
 OperatorFn = Callable[[str, random.Random], Iterator[Mutant]]
 CandidatesFn = Callable[[str], Iterator[Site]]
-
-_ISSUE_CDC = "rtl-buddy-cdc#221"
 
 
 OPERATORS: dict[MutationKind, OperatorFn] = {
     # CDC operators
     MutationKind.CLOCK_POLARITY_SWAP: _clock_polarity_swap.operator,
     MutationKind.ATTRIBUTE_TOGGLE: _attribute_toggle.operator,
-    MutationKind.SYNC_CHAIN_DEPTH_PERTURB: _stubs.make_mutant_stub(
-        MutationKind.SYNC_CHAIN_DEPTH_PERTURB, _ISSUE_CDC
-    ),
-    MutationKind.BIT_EXTRACT_PERMUTE: _stubs.make_mutant_stub(
-        MutationKind.BIT_EXTRACT_PERMUTE, _ISSUE_CDC
-    ),
+    MutationKind.SYNC_CHAIN_DEPTH_PERTURB: _sync_chain_depth_perturb.operator,
+    MutationKind.BIT_EXTRACT_PERMUTE: _bit_extract_permute.operator,
     MutationKind.RESET_POLARITY_FLIP: _reset_polarity_flip.operator,
     # rb-mut operators
     MutationKind.ASSIGN_DROP: _assign_drop.operator,
@@ -66,12 +61,8 @@ CANDIDATES: dict[MutationKind, CandidatesFn] = {
     # CDC operators
     MutationKind.CLOCK_POLARITY_SWAP: _clock_polarity_swap.candidates,
     MutationKind.ATTRIBUTE_TOGGLE: _attribute_toggle.candidates,
-    MutationKind.SYNC_CHAIN_DEPTH_PERTURB: _stubs.make_candidates_stub(
-        MutationKind.SYNC_CHAIN_DEPTH_PERTURB, _ISSUE_CDC
-    ),
-    MutationKind.BIT_EXTRACT_PERMUTE: _stubs.make_candidates_stub(
-        MutationKind.BIT_EXTRACT_PERMUTE, _ISSUE_CDC
-    ),
+    MutationKind.SYNC_CHAIN_DEPTH_PERTURB: _sync_chain_depth_perturb.candidates,
+    MutationKind.BIT_EXTRACT_PERMUTE: _bit_extract_permute.candidates,
     MutationKind.RESET_POLARITY_FLIP: _reset_polarity_flip.candidates,
     # rb-mut operators
     MutationKind.ASSIGN_DROP: _assign_drop.candidates,
@@ -83,16 +74,4 @@ CANDIDATES: dict[MutationKind, CandidatesFn] = {
 }
 
 
-IMPLEMENTED_KINDS: frozenset[MutationKind] = frozenset(
-    {
-        MutationKind.CLOCK_POLARITY_SWAP,
-        MutationKind.ATTRIBUTE_TOGGLE,
-        MutationKind.ASSIGN_DROP,
-        MutationKind.ARITH_FLIP,
-        MutationKind.BIT_OP_FLIP,
-        MutationKind.COND_NEGATE,
-        MutationKind.COND_CONST,
-        MutationKind.PORT_BINDING_SWAP,
-        MutationKind.RESET_POLARITY_FLIP,
-    }
-)
+IMPLEMENTED_KINDS: frozenset[MutationKind] = frozenset(MutationKind)

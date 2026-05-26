@@ -1,0 +1,67 @@
+[project]
+name = "rtl-buddy-xeno"
+version = "0.0.1"
+description = "SystemVerilog AST-mutation corpus generator. CDC-aware structural mutations (clock polarity swap, sync-chain depth perturbation, bit-extract permutation, attribute toggle, reset polarity flip) for fuzzer and mutation-testing harnesses."
+readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+requires-python = ">=3.13"
+authors = [
+    { name = "Loh Zhi-Hern", email = "expsg-hern@users.noreply.github.com" }
+]
+# Runtime closure intentionally empty at v0. The bundled clock_polarity_swap
+# operator is a token-level rewrite that needs no SV parser; the planned
+# structural operators (sync-chain depth, bit-extract permutation) will pull
+# pyslang in behind the `[slang]` extra below — see README "Parser choice".
+dependencies = []
+
+[project.optional-dependencies]
+# Reserved for the structural-operator graduation path. Pyslang is the
+# declared target parser (matches rtl-buddy-cdc's `[slang]` extra); pinning
+# stays loose until the first structural operator actually imports it.
+slang = [
+    "pyslang>=10,<11",
+]
+
+[project.urls]
+"Source" = "https://github.com/rtl-buddy/rtl-buddy-xeno"
+"Design (Stage 3)" = "https://github.com/rtl-buddy/rtl-buddy-cdc/issues/221"
+"Design (Stage 4)" = "https://github.com/rtl-buddy/rtl-buddy-cdc/issues/222"
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+lint = [
+    "mypy>=2.1.0",
+    "ruff>=0.11.0",
+]
+test = [
+    "pytest>=9.0.3",
+]
+dev = [
+    { include-group = "lint" },
+    { include-group = "test" },
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["F", "E7", "E9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["src/rtl_buddy_xeno"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pyslang.*"
+ignore_missing_imports = true
+follow_imports = "skip"

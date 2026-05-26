@@ -201,11 +201,8 @@ def test_full_enum_has_eleven_kinds() -> None:
 def test_stubbed_kinds_raise_with_issue_link() -> None:
     """Every unimplemented kind raises NotImplementedError pointing at the design issue."""
     mutator = Mutator.from_sv(_SYNTHETIC_SV)
-    implemented = {
-        MutationKind.CLOCK_POLARITY_SWAP,
-        MutationKind.ATTRIBUTE_TOGGLE,
-        MutationKind.ASSIGN_DROP,
-    }
+    from rtl_buddy_xeno.operators import IMPLEMENTED_KINDS as implemented
+
     for kind in MutationKind:
         if kind in implemented:
             continue
@@ -219,11 +216,8 @@ def test_stubbed_kinds_raise_with_issue_link() -> None:
 def test_stubbed_candidates_also_raise() -> None:
     """Same stub behaviour on the candidates surface."""
     mutator = Mutator.from_sv(_SYNTHETIC_SV)
-    implemented = {
-        MutationKind.CLOCK_POLARITY_SWAP,
-        MutationKind.ATTRIBUTE_TOGGLE,
-        MutationKind.ASSIGN_DROP,
-    }
+    from rtl_buddy_xeno.operators import IMPLEMENTED_KINDS as implemented
+
     for kind in MutationKind:
         if kind in implemented:
             continue

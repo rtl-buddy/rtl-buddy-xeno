@@ -30,6 +30,8 @@ from rtl_buddy_xeno.operators import (
     _clock_polarity_swap,
     _cond_const,
     _cond_negate,
+    _port_binding_swap,
+    _reset_polarity_flip,
     _stubs,
 )
 
@@ -37,7 +39,6 @@ OperatorFn = Callable[[str, random.Random], Iterator[Mutant]]
 CandidatesFn = Callable[[str], Iterator[Site]]
 
 _ISSUE_CDC = "rtl-buddy-cdc#221"
-_ISSUE_RBMUT = "rtl_buddy#206"
 
 
 OPERATORS: dict[MutationKind, OperatorFn] = {
@@ -50,18 +51,14 @@ OPERATORS: dict[MutationKind, OperatorFn] = {
     MutationKind.BIT_EXTRACT_PERMUTE: _stubs.make_mutant_stub(
         MutationKind.BIT_EXTRACT_PERMUTE, _ISSUE_CDC
     ),
-    MutationKind.RESET_POLARITY_FLIP: _stubs.make_mutant_stub(
-        MutationKind.RESET_POLARITY_FLIP, _ISSUE_CDC
-    ),
+    MutationKind.RESET_POLARITY_FLIP: _reset_polarity_flip.operator,
     # rb-mut operators
     MutationKind.ASSIGN_DROP: _assign_drop.operator,
     MutationKind.ARITH_FLIP: _arith_flip.operator,
     MutationKind.BIT_OP_FLIP: _bit_op_flip.operator,
     MutationKind.COND_NEGATE: _cond_negate.operator,
     MutationKind.COND_CONST: _cond_const.operator,
-    MutationKind.PORT_BINDING_SWAP: _stubs.make_mutant_stub(
-        MutationKind.PORT_BINDING_SWAP, _ISSUE_RBMUT
-    ),
+    MutationKind.PORT_BINDING_SWAP: _port_binding_swap.operator,
 }
 
 
@@ -75,18 +72,14 @@ CANDIDATES: dict[MutationKind, CandidatesFn] = {
     MutationKind.BIT_EXTRACT_PERMUTE: _stubs.make_candidates_stub(
         MutationKind.BIT_EXTRACT_PERMUTE, _ISSUE_CDC
     ),
-    MutationKind.RESET_POLARITY_FLIP: _stubs.make_candidates_stub(
-        MutationKind.RESET_POLARITY_FLIP, _ISSUE_CDC
-    ),
+    MutationKind.RESET_POLARITY_FLIP: _reset_polarity_flip.candidates,
     # rb-mut operators
     MutationKind.ASSIGN_DROP: _assign_drop.candidates,
     MutationKind.ARITH_FLIP: _arith_flip.candidates,
     MutationKind.BIT_OP_FLIP: _bit_op_flip.candidates,
     MutationKind.COND_NEGATE: _cond_negate.candidates,
     MutationKind.COND_CONST: _cond_const.candidates,
-    MutationKind.PORT_BINDING_SWAP: _stubs.make_candidates_stub(
-        MutationKind.PORT_BINDING_SWAP, _ISSUE_RBMUT
-    ),
+    MutationKind.PORT_BINDING_SWAP: _port_binding_swap.candidates,
 }
 
 
@@ -99,5 +92,7 @@ IMPLEMENTED_KINDS: frozenset[MutationKind] = frozenset(
         MutationKind.BIT_OP_FLIP,
         MutationKind.COND_NEGATE,
         MutationKind.COND_CONST,
+        MutationKind.PORT_BINDING_SWAP,
+        MutationKind.RESET_POLARITY_FLIP,
     }
 )

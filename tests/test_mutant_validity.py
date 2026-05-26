@@ -57,6 +57,8 @@ _FIXTURES: dict[MutationKind, Path] = {
     MutationKind.BIT_OP_FLIP: _FIXTURES_DIR / "expressions.sv",
     MutationKind.COND_NEGATE: _FIXTURES_DIR / "expressions.sv",
     MutationKind.COND_CONST: _FIXTURES_DIR / "expressions.sv",
+    MutationKind.PORT_BINDING_SWAP: _FIXTURES_DIR / "instances_and_resets.sv",
+    MutationKind.RESET_POLARITY_FLIP: _FIXTURES_DIR / "instances_and_resets.sv",
 }
 
 

@@ -9,16 +9,25 @@ requires-python = ">=3.13"
 authors = [
     { name = "Loh Zhi-Hern", email = "expsg-hern@users.noreply.github.com" }
 ]
-# Runtime closure intentionally empty at v0. The bundled clock_polarity_swap
-# operator is a token-level rewrite that needs no SV parser; the planned
-# structural operators (sync-chain depth, bit-extract permutation) will pull
-# pyslang in behind the `[slang]` extra below — see README "Parser choice".
+# Runtime closure intentionally empty. The bundled CLOCK_POLARITY_SWAP
+# operator is a regex-based token rewrite that needs no SV parser; every
+# other operator pulls its parser in via the `[verible]` and/or `[slang]`
+# extras below — see #4 (parser layering) for the per-operator picks.
 dependencies = []
 
 [project.optional-dependencies]
-# Reserved for the structural-operator graduation path. Pyslang is the
-# declared target parser (matches rtl-buddy-cdc's `[slang]` extra); pinning
-# stays loose until the first structural operator actually imports it.
+# Verible CST substrate (via rtl-buddy-view's public helpers — view#109).
+# Required by ATTRIBUTE_TOGGLE, ASSIGN_DROP, and every other operator that
+# needs to walk the SV source structurally. The `cst.py` facade lazy-
+# imports this so the no-extras install path stays working (only
+# CLOCK_POLARITY_SWAP runs without `[verible]`).
+verible = [
+    "rtl-buddy-view>=0.2.0,<0.3.0",
+]
+# Pyslang elaboration. Required by the four operators that need semantic
+# context (sync-chain identification, bit-extract slice width, reset-chain
+# head, state-bearing-assignment classification). Also lazy-imported via
+# the `slang.py` facade.
 slang = [
     "pyslang>=10,<11",
 ]
@@ -27,6 +36,13 @@ slang = [
 "Source" = "https://github.com/rtl-buddy/rtl-buddy-xeno"
 "Design (Stage 3)" = "https://github.com/rtl-buddy/rtl-buddy-cdc/issues/221"
 "Design (Stage 4)" = "https://github.com/rtl-buddy/rtl-buddy-cdc/issues/222"
+
+# rtl-buddy-view is not on PyPI today; the `[verible]` extra resolves via
+# a GitHub git source until publication. The version constraint above
+# (rtl-buddy-view>=0.2.0,<0.3.0) still applies — uv will check the git
+# tree's pyproject.toml against the constraint at resolve time.
+[tool.uv.sources]
+rtl-buddy-view = { git = "https://github.com/rtl-buddy/rtl-buddy-view.git", tag = "v0.2.0" }
 
 [build-system]
 requires = ["uv_build>=0.11.7,<0.12.0"]

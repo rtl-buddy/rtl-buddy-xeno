@@ -53,6 +53,10 @@ _FIXTURES: dict[MutationKind, Path] = {
     MutationKind.CLOCK_POLARITY_SWAP: _FIXTURES_DIR / "sync_chain.sv",
     MutationKind.ATTRIBUTE_TOGGLE: _FIXTURES_DIR / "attr_sweep.sv",
     MutationKind.ASSIGN_DROP: _FIXTURES_DIR / "sync_chain.sv",
+    MutationKind.ARITH_FLIP: _FIXTURES_DIR / "expressions.sv",
+    MutationKind.BIT_OP_FLIP: _FIXTURES_DIR / "expressions.sv",
+    MutationKind.COND_NEGATE: _FIXTURES_DIR / "expressions.sv",
+    MutationKind.COND_CONST: _FIXTURES_DIR / "expressions.sv",
 }
 
 

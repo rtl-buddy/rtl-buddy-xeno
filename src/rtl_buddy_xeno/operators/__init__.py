@@ -9,11 +9,11 @@ walker for an implemented mutator (or vice-versa).
 
 The no-straddle rule from #4 is enforceable by reading this directory:
 each operator's module declares which parser layer it sits in via the
-imports it carries. ``_clock_polarity_swap`` imports only ``re``;
-``_attribute_toggle`` imports ``rtl_buddy_xeno.cst``;
-``_assign_drop`` imports both ``rtl_buddy_xeno.cst`` and
-``rtl_buddy_xeno.slang``. A single operator never mixes both the
-regex and the CST path within itself.
+imports it carries. Regex-only operators import only ``re`` (or the
+careful string-scanner pattern); Verible-CST operators import
+``rtl_buddy_xeno.cst``; Verible+slang operators import both
+``rtl_buddy_xeno.cst`` and ``rtl_buddy_xeno.slang``. A single
+operator never mixes paths within itself.
 """
 
 from __future__ import annotations
@@ -23,9 +23,13 @@ from collections.abc import Callable, Iterator
 
 from rtl_buddy_xeno.mutator import Mutant, MutationKind, Site
 from rtl_buddy_xeno.operators import (
+    _arith_flip,
     _assign_drop,
     _attribute_toggle,
+    _bit_op_flip,
     _clock_polarity_swap,
+    _cond_const,
+    _cond_negate,
     _stubs,
 )
 
@@ -51,18 +55,10 @@ OPERATORS: dict[MutationKind, OperatorFn] = {
     ),
     # rb-mut operators
     MutationKind.ASSIGN_DROP: _assign_drop.operator,
-    MutationKind.ARITH_FLIP: _stubs.make_mutant_stub(
-        MutationKind.ARITH_FLIP, _ISSUE_RBMUT
-    ),
-    MutationKind.BIT_OP_FLIP: _stubs.make_mutant_stub(
-        MutationKind.BIT_OP_FLIP, _ISSUE_RBMUT
-    ),
-    MutationKind.COND_NEGATE: _stubs.make_mutant_stub(
-        MutationKind.COND_NEGATE, _ISSUE_RBMUT
-    ),
-    MutationKind.COND_CONST: _stubs.make_mutant_stub(
-        MutationKind.COND_CONST, _ISSUE_RBMUT
-    ),
+    MutationKind.ARITH_FLIP: _arith_flip.operator,
+    MutationKind.BIT_OP_FLIP: _bit_op_flip.operator,
+    MutationKind.COND_NEGATE: _cond_negate.operator,
+    MutationKind.COND_CONST: _cond_const.operator,
     MutationKind.PORT_BINDING_SWAP: _stubs.make_mutant_stub(
         MutationKind.PORT_BINDING_SWAP, _ISSUE_RBMUT
     ),
@@ -84,18 +80,10 @@ CANDIDATES: dict[MutationKind, CandidatesFn] = {
     ),
     # rb-mut operators
     MutationKind.ASSIGN_DROP: _assign_drop.candidates,
-    MutationKind.ARITH_FLIP: _stubs.make_candidates_stub(
-        MutationKind.ARITH_FLIP, _ISSUE_RBMUT
-    ),
-    MutationKind.BIT_OP_FLIP: _stubs.make_candidates_stub(
-        MutationKind.BIT_OP_FLIP, _ISSUE_RBMUT
-    ),
-    MutationKind.COND_NEGATE: _stubs.make_candidates_stub(
-        MutationKind.COND_NEGATE, _ISSUE_RBMUT
-    ),
-    MutationKind.COND_CONST: _stubs.make_candidates_stub(
-        MutationKind.COND_CONST, _ISSUE_RBMUT
-    ),
+    MutationKind.ARITH_FLIP: _arith_flip.candidates,
+    MutationKind.BIT_OP_FLIP: _bit_op_flip.candidates,
+    MutationKind.COND_NEGATE: _cond_negate.candidates,
+    MutationKind.COND_CONST: _cond_const.candidates,
     MutationKind.PORT_BINDING_SWAP: _stubs.make_candidates_stub(
         MutationKind.PORT_BINDING_SWAP, _ISSUE_RBMUT
     ),
@@ -107,5 +95,9 @@ IMPLEMENTED_KINDS: frozenset[MutationKind] = frozenset(
         MutationKind.CLOCK_POLARITY_SWAP,
         MutationKind.ATTRIBUTE_TOGGLE,
         MutationKind.ASSIGN_DROP,
+        MutationKind.ARITH_FLIP,
+        MutationKind.BIT_OP_FLIP,
+        MutationKind.COND_NEGATE,
+        MutationKind.COND_CONST,
     }
 )

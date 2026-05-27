@@ -1,13 +1,41 @@
 [project]
 name = "rtl-buddy-xeno"
 version = "0.0.1"
-description = "SystemVerilog AST-mutation corpus generator. CDC-aware structural mutations (clock polarity swap, sync-chain depth perturbation, bit-extract permutation, attribute toggle, reset polarity flip) for fuzzer and mutation-testing harnesses."
+description = "SystemVerilog AST-mutation corpus generator. Source-level CDC-aware and FPV-aware mutations for fuzzer and mutation-testing harnesses."
 readme = "README.md"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 requires-python = ">=3.13"
 authors = [
     { name = "Loh Zhi-Hern", email = "expsg-hern@users.noreply.github.com" }
+]
+keywords = [
+    "systemverilog",
+    "verilog",
+    "rtl",
+    "mutation-testing",
+    "fuzzing",
+    "cdc",
+    "clock-domain-crossing",
+    "eda",
+    "asic",
+    "fpga",
+    "verification",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
 ]
 # Runtime closure intentionally empty. The bundled CLOCK_POLARITY_SWAP
 # operator is a regex-based token rewrite that needs no SV parser; every
@@ -33,14 +61,21 @@ slang = [
 ]
 
 [project.urls]
+"Homepage" = "https://github.com/rtl-buddy/rtl-buddy-xeno"
 "Source" = "https://github.com/rtl-buddy/rtl-buddy-xeno"
+"Issues" = "https://github.com/rtl-buddy/rtl-buddy-xeno/issues"
+"Releases" = "https://github.com/rtl-buddy/rtl-buddy-xeno/releases"
 "Design (Stage 3)" = "https://github.com/rtl-buddy/rtl-buddy-cdc/issues/221"
 "Design (Stage 4)" = "https://github.com/rtl-buddy/rtl-buddy-cdc/issues/222"
 
 # rtl-buddy-view is not on PyPI today; the `[verible]` extra resolves via
-# a GitHub git source until publication. The version constraint above
-# (rtl-buddy-view>=0.2.0,<0.3.0) still applies — uv will check the git
-# tree's pyproject.toml against the constraint at resolve time.
+# a GitHub git source for local development until view publishes. The
+# version constraint in [project.optional-dependencies] (>=0.2.0,<0.3.0)
+# still applies. This [tool.uv.sources] block is read by uv during
+# development and is NOT included in the published wheel's metadata — so
+# once view is on PyPI, PyPI consumers resolve cleanly via the version
+# constraint alone; this block can be deleted from this file in the same
+# change that lands view's first published release.
 [tool.uv.sources]
 rtl-buddy-view = { git = "https://github.com/rtl-buddy/rtl-buddy-view.git", tag = "v0.2.0" }
 

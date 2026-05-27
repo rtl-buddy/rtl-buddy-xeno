@@ -1,0 +1,98 @@
+name: Publish to PyPI
+
+# Two trigger paths:
+#
+# 1. ``release: published`` — fires automatically when a GitHub Release
+#    is published (manually via the UI, via ``gh release create``, etc.).
+#    Builds + publishes to the real PyPI.
+# 2. ``workflow_dispatch`` — manual trigger from the Actions tab. The
+#    ``target`` input selects between TestPyPI (dry-run, recommended
+#    before any real release) and PyPI (same as the release trigger).
+#
+# Authentication uses **OIDC trusted publishing** — no API token in
+# repo secrets. The publisher on (Test)PyPI must be configured to trust
+# this workflow path; see RELEASING.md for setup.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        required: true
+        default: testpypi
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+# Cancel any in-flight publish for the same ref — keeps two simultaneous
+# releases from racing.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Build distribution
+        run: uv build
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Verify wheel metadata
+        run: uv run --with twine twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/rtl-buddy-xeno
+    permissions:
+      id-token: write   # required for OIDC trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/rtl-buddy-xeno
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/

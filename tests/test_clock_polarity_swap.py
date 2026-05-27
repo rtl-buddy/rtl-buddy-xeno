@@ -76,11 +76,87 @@ def test_different_seeds_reorder_mutants() -> None:
     assert len(orderings) > 1
 
 
-def test_prediction_declares_cdc006() -> None:
+def test_prediction_declares_cdc016() -> None:
+    """The polarity swap on a sync-chain stage creates an adjacent-stage
+    polarity mismatch on the destination clock — CDC-016's territory in
+    rtl-buddy-cdc's rule pack. Prior to the cdc#221 / cdc#224
+    integration the operator predicted CDC-006 by mistake (CDC-006 is
+    the comb-driven-sync-source rule)."""
     [first, *_] = _mutants(_SYNTHETIC_SV, count=1)
     assert isinstance(first.prediction, Prediction)
-    assert "CDC-006" in first.prediction.cdc_rules_added
+    assert "CDC-016" in first.prediction.cdc_rules_added
+    assert "CDC-006" not in first.prediction.cdc_rules_added
     assert first.prediction.rationale  # non-empty rationale required
+
+
+def test_reset_edges_skipped() -> None:
+    """Reset-edge polarity tokens (``negedge rst_n``, ``posedge reset``,
+    etc.) are skipped — flipping them produces SV that's syntactically
+    valid but semantically broken (the matching ``if (!rst_n)`` body
+    wouldn't be flipped), and Yosys rejects the result with ``Async
+    reset … yields non-constant value``."""
+    sv = (
+        "module m (\n"
+        "  input  logic clk, rst_n, d,\n"
+        "  output logic q\n"
+        ");\n"
+        "  always_ff @(posedge clk or negedge rst_n)\n"
+        "    if (!rst_n) q <= 1'b0;\n"
+        "    else        q <= d;\n"
+        "endmodule\n"
+    )
+    mutants = _mutants(sv, count=99)
+    # Only the clock edge (``posedge clk``) is a valid swap site; the
+    # ``negedge rst_n`` site is skipped by the reset-name heuristic.
+    assert len(mutants) == 1, [m.diff_summary for m in mutants]
+    [m] = mutants
+    assert "negedge clk" in m.sv
+    assert "negedge rst_n" in m.sv  # preserved
+
+
+def test_reset_name_variants_all_skipped() -> None:
+    """Common reset-name idioms (``rst_n``, ``reset``, ``arst``,
+    ``raw_rst_n``, ``global_rst_n``, ``presetn``) all match the
+    reset-name heuristic and are skipped.
+
+    The check looks at the *mutated SV*: the reset signal's edge
+    token must be preserved (still ``negedge <name>``), and the
+    clock's edge token must be flipped (``negedge clk``). Only one
+    mutant per SV — the single allowed swap site.
+    """
+    for reset_name in (
+        "rst_n",
+        "rst",
+        "reset",
+        "resetn",
+        "arst",
+        "arst_n",
+        "raw_rst_n",
+        "global_rst_n",
+        "local_rst_n",
+        "presetn",
+    ):
+        sv = (
+            f"always_ff @(posedge clk or negedge {reset_name})\n"
+            f"  if (!{reset_name}) q <= 0; else q <= d;\n"
+        )
+        mutants = _mutants(sv, count=99)
+        assert len(mutants) == 1, (reset_name, [m.diff_summary for m in mutants])
+        [m] = mutants
+        # Clock edge flipped.
+        assert "negedge clk" in m.sv, (reset_name, m.sv)
+        # Reset edge preserved (i.e. the original ``negedge <name>`` is
+        # still present in the mutated source).
+        assert f"negedge {reset_name}" in m.sv, (reset_name, m.sv)
+
+
+def test_non_reset_named_signal_still_swappable() -> None:
+    """Conservative skip: only signals whose names look like resets
+    are filtered. Anything else (``clk``, ``en``, ``valid``, even a
+    non-canonical-name clock like ``foo``) gets swapped as before."""
+    sv = "always_ff @(negedge en) q <= d;\n"
+    [m] = _mutants(sv, count=1)
+    assert "posedge en" in m.sv
 
 
 def test_diff_summary_carries_line_number() -> None:
@@ -115,7 +191,7 @@ def test_candidates_enumerates_polarity_sites_in_source_order() -> None:
         assert isinstance(s, Site)
         assert s.kind is MutationKind.CLOCK_POLARITY_SWAP
         assert s.snippet in {"posedge", "negedge"}
-        assert "CDC-006" in s.prediction.cdc_rules_added
+        assert "CDC-016" in s.prediction.cdc_rules_added
 
 
 def test_schedule_round_robin_interleaves_kinds() -> None:

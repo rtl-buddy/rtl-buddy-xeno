@@ -28,9 +28,14 @@ from collections.abc import Iterator
 from rtl_buddy_xeno.mutator import MutationKind, Mutant, Prediction, Site
 
 # Attribute name → predicted CDC rule(s) that should fire when stripped.
+# Mapping verified against rtl-buddy-cdc's rule pack in #221 (Stage 3 Layer B
+# fuzz integration); the ``glitchless_clock_mux`` row was previously
+# CDC-008 ("clock pin driven by data") — the right rule for an unmarked
+# async clock-mux is CDC-010 ("async clock mux select"). See
+# rtl-buddy-cdc/src/rtl_buddy_cdc/rules.py ``check_cdc_010``.
 _ATTR_PREDICTIONS: dict[str, frozenset[str]] = {
     "cdc_sync": frozenset({"CDC-002", "CDC-003"}),
-    "glitchless_clock_mux": frozenset({"CDC-008"}),
+    "glitchless_clock_mux": frozenset({"CDC-010"}),
     "cdc_gray": frozenset({"CDC-019"}),
     "reset_sync": frozenset({"RDC-001"}),
     "reset_polarity": frozenset({"RDC-001", "RDC-007"}),

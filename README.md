@@ -113,16 +113,25 @@ choice via the imports it carries.
 
 ## Install
 
+> **Note**: `rtl-buddy-xeno` is preparing for its first PyPI release.
+> Until that lands (see [`RELEASING.md`](RELEASING.md)), install from
+> source: `pip install git+https://github.com/rtl-buddy/rtl-buddy-xeno`.
+
 ```bash
-# Bare install — only CLOCK_POLARITY_SWAP and ATTRIBUTE_TOGGLE work.
+# Bare install — only the regex-based operators (CLOCK_POLARITY_SWAP
+# and ATTRIBUTE_TOGGLE) run without extras.
 pip install rtl-buddy-xeno
 
-# With Verible CST support (required by most structural operators).
-# Pulls in `rtl-buddy-view>=0.2.0` from GitHub (not yet on PyPI).
+# With Verible CST support (required by every structural operator
+# except CLOCK_POLARITY_SWAP and ATTRIBUTE_TOGGLE). Pulls in
+# `rtl-buddy-view>=0.2.0`. NB: until rtl-buddy-view publishes to PyPI
+# this extra is only installable via git source — for local
+# development use `uv sync --extra verible` against this repo.
 pip install "rtl-buddy-xeno[verible]"
 
-# With pyslang elaboration (required by the four semantically-gated
-# structural operators).
+# With pyslang elaboration (used by the four semantically-gated
+# operators: ASSIGN_DROP, RESET_POLARITY_FLIP, plus the optional
+# semantic-gating path on ARITH_FLIP / BIT_OP_FLIP).
 pip install "rtl-buddy-xeno[slang]"
 
 # Most operators need both.

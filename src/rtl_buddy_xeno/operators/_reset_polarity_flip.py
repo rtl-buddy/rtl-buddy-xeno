@@ -127,16 +127,37 @@ def _splice(sv: str, start: int, end: int, replacement: str) -> str:
 def _predict(
     original: str, replacement: str, signal: str, line: int, slang_elaborated: bool
 ) -> Prediction:
+    """Conservative prediction.
+
+    The operator flips the polarity of a reset edge in an
+    ``always_ff`` sensitivity list. Whether RDC-007 (reset-sync
+    polarity wired backwards) fires depends on what the chain
+    head's ``D`` ties to (active polarity vs. deasserted polarity)
+    and whether the chain is a reset synchroniser by structure
+    rather than just by name. The Verible CST recogniser sees only
+    the sensitivity-list edge; pyslang's confidence (when
+    available) confirms the signal is a reset by elaboration but
+    not whether the resulting flip creates an RDC-007 hazard.
+
+    Prior to the rtl-buddy-cdc#221 fuzz integration the prediction
+    declared ``cdc_rules_added = {RDC-007}`` unconditionally, which
+    over-claimed on parents where the chain head's D wasn't tied
+    to the asserted polarity. This prediction now records intent
+    in the rationale without making a positive CDC-rule claim;
+    the downstream coverage report measures the actual fires.
+    """
     confidence = "pyslang-elaborated" if slang_elaborated else "name-heuristic only"
     return Prediction(
         rationale=(
             f"flipped `{original}` → `{replacement}` on reset signal "
             f"`{signal}` at line {line} ({confidence}); the synchroniser "
-            "now deasserts on the opposite edge, so any property "
-            "constraining reset-release timing or RDC-007 (reset-sync "
-            "polarity wired backwards) should fire"
+            "now deasserts on the opposite edge. RDC-007 (reset-sync "
+            "polarity wired backwards) fires when the chain head's D is "
+            "tied to the asserted polarity — the operator doesn't verify "
+            "that condition from the sensitivity-list edge alone, so "
+            "cdc_rules_added stays empty and coverage report tracks the "
+            "actual rule fires on the mutated source"
         ),
-        cdc_rules_added=frozenset({"RDC-007"}),
         perturbs_signals=frozenset({signal}),
         perturbs_liveness=False,
     )

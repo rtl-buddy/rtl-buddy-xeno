@@ -149,15 +149,32 @@ def _splice(sv: str, start: int, end: int, replacement: str) -> str:
 
 
 def _predict(original: str, replacement: str, mode: str, line: int) -> Prediction:
+    """Conservative prediction.
+
+    The operator narrows a bit-select range by one bit. Whether
+    CDC-019 (independently-synced one-hot decode) or CDC-020
+    (sliced-bus reconvergence) actually fire on the mutated source
+    depends on the surrounding *crossing* structure (per-lane src
+    flops on a common comb driver, per-lane synchronisers in the
+    dst domain) — none of which the Verible CST recogniser walks
+    when looking for bit-select sites. Predicting CDC-019/CDC-020
+    unconditionally over-claimed on the majority of corpus parents
+    (where the narrowed slice doesn't recompose at a sync chain),
+    so this prediction now records intent in the rationale without
+    making a positive CDC-rule claim. Coverage report tracks the
+    actual fires on the mutated source.
+    """
     side = "MSB" if mode == "drop_msb" else "LSB"
     return Prediction(
         rationale=(
             f"narrowed bit-select range by dropping the {side} (`{original}` → "
-            f"`{replacement}`) at line {line}; the slice's composition changes "
-            "so any property over CDC-019 / CDC-020 (sliced-bus reconvergence) "
-            "should fire on the changed slice"
+            f"`{replacement}`) at line {line}; the slice's composition changes. "
+            "CDC-019 / CDC-020 (sliced-bus reconvergence) fire when the "
+            "narrowed slice recomposes at a sync chain — the operator "
+            "doesn't verify that surrounding structure, so cdc_rules_added "
+            "stays empty and the downstream coverage report measures the "
+            "actual rule fires on the mutated source"
         ),
-        cdc_rules_added=frozenset({"CDC-019", "CDC-020"}),
         perturbs_liveness=False,
     )
 

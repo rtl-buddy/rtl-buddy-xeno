@@ -96,11 +96,18 @@ def test_reset_polarity_flip_skips_clock_edges() -> None:
         )
 
 
-def test_reset_polarity_flip_prediction_includes_rdc007() -> None:
+def test_reset_polarity_flip_prediction_conservative() -> None:
+    """The operator's prediction stays conservative: the rationale
+    mentions RDC-007 (the rule for reset-sync polarity wired
+    backwards) but ``cdc_rules_added`` is empty. Prior to
+    rtl-buddy-cdc#221 fuzz integration the prediction was
+    unconditional RDC-007, which over-claimed on parents where the
+    chain head's ``D`` wasn't tied to the asserted polarity."""
     [first, *_] = Mutator.from_sv(_sv()).generate(
         [MutationKind.RESET_POLARITY_FLIP], count=1
     )
-    assert "RDC-007" in first.prediction.cdc_rules_added
+    assert first.prediction.cdc_rules_added == frozenset()
+    assert "RDC-007" in first.prediction.rationale
 
 
 def test_reset_polarity_flip_rationale_records_slang_confidence() -> None:

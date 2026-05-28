@@ -78,45 +78,99 @@ def _is_reset_edge(sv: str, end_of_token: int) -> bool:
     return any(p.match(name) for p in _RESET_NAME_PATTERNS)
 
 
-def _predict(line: int, original: str, replacement: str) -> Prediction:
+def _clock_signal_name(sv: str, end_of_token: int) -> str | None:
+    """Return the identifier that follows the polarity token, or
+    ``None`` if no identifier sits there."""
+    tail = _FOLLOWING_IDENT.match(sv, end_of_token)
+    return tail.group(1) if tail is not None else None
+
+
+def _looks_like_chain_stage(sv: str, clock_name: str | None) -> bool:
+    """``True`` when ``clock_name`` shows up in ≥2 polarity-edge sites
+    elsewhere in the SV — a parser-free proxy for "this clock drives a
+    sync chain ≥2 stages deep."
+
+    Why: CDC-016 in rtl-buddy-cdc fires on adjacent-stage polarity
+    mismatch *inside a sync chain*. A polarity swap on a standalone
+    flop (the only always_ff using that clock) creates a different-
+    domain flop on the opposite edge but no chain mismatch — CDC-016
+    stays silent and the prediction would be a false positive. The
+    chain-presence heuristic gates the CDC-016 claim so the
+    prediction is structurally honest for the parser-free operator.
+    """
+    if clock_name is None:
+        return False
+    pattern = re.compile(rf"\b(?:posedge|negedge)\s+{re.escape(clock_name)}\b")
+    return len(pattern.findall(sv)) >= 2
+
+
+def _predict(
+    sv: str,
+    line: int,
+    original: str,
+    replacement: str,
+    *,
+    is_chain_stage: bool,
+) -> Prediction:
+    """Per-site prediction.
+
+    The operator is parser-free, so the structural-context guess is a
+    heuristic over the surrounding SV. When ``is_chain_stage`` is
+    ``True`` we claim CDC-016 should fire (adjacent-stage polarity
+    mismatch); when ``False`` we make no positive claim (the swap
+    produces some change — typically a domain shift — but no specific
+    rule we can predict from a token-only view of the source).
+    """
+    del sv  # kept in the signature for future, parser-richer heuristics
+    if is_chain_stage:
+        return Prediction(
+            rationale=(
+                f"clock-polarity swap on a sync-chain stage at line "
+                f"{line} ({original} → {replacement}) creates an "
+                "adjacent-stage polarity mismatch on the destination "
+                "clock; CDC-016 should fire (the chain-stage heuristic "
+                "saw ≥2 polarity-edge sites for this clock in the same "
+                "source — a parser-free proxy for chain depth ≥2)"
+            ),
+            cdc_rules_added=frozenset({"CDC-016"}),
+        )
     return Prediction(
         rationale=(
-            f"clock-polarity swap on a sync-chain stage at line {line} "
-            f"({original} → {replacement}) creates an adjacent-stage "
-            "polarity mismatch on the destination clock; CDC-016 should "
-            "fire when the swapped token is a sync-chain stage. The "
-            "operator is structurally context-blind (parser-free), so "
-            "swaps on a single standalone flop produce a domain change "
-            "rather than a chain polarity mismatch — the downstream "
-            "oracle should treat this prediction as directional"
+            f"clock-polarity swap at line {line} ({original} → "
+            f"{replacement}) on a clock that the chain-stage heuristic "
+            "reports as standalone (only one polarity-edge site for "
+            "this clock in the source); the swap perturbs the analyzer "
+            "but the parser-free operator can't confidently predict a "
+            "specific CDC rule will fire — leaving cdc_rules_added "
+            "empty so the downstream directional check stays honest"
         ),
-        cdc_rules_added=frozenset({"CDC-016"}),
     )
 
 
 def _mutants(sv: str, rng: random.Random) -> Iterator[Mutant]:
     positions = [
-        m.start()
-        for m in _POLARITY_TOKEN.finditer(sv)
-        if not _is_reset_edge(sv, m.end())
+        m for m in _POLARITY_TOKEN.finditer(sv) if not _is_reset_edge(sv, m.end())
     ]
     if not positions:
         return
     order = list(range(len(positions)))
     rng.shuffle(order)
     for idx in order:
-        pos = positions[idx]
-        match = _POLARITY_TOKEN.match(sv, pos)
-        assert match is not None
+        match = positions[idx]
+        pos = match.start()
         original = match.group(1)
         replacement = "negedge" if original == "posedge" else "posedge"
         mutated = sv[: match.start()] + replacement + sv[match.end() :]
         line = sv.count("\n", 0, pos) + 1
+        clock_name = _clock_signal_name(sv, match.end())
+        is_chain = _looks_like_chain_stage(sv, clock_name)
         yield Mutant(
             sv=mutated,
             diff_summary=f"line {line}: {original} -> {replacement}",
             seed=pos,
-            prediction=_predict(line, original, replacement),
+            prediction=_predict(
+                sv, line, original, replacement, is_chain_stage=is_chain
+            ),
             kind=MutationKind.CLOCK_POLARITY_SWAP,
         )
 
@@ -132,12 +186,16 @@ def _candidates(sv: str) -> Iterator[Site]:
         # column: byte offset within the line, 1-indexed
         last_newline = sv.rfind("\n", 0, pos)
         column = pos - last_newline if last_newline >= 0 else pos + 1
+        clock_name = _clock_signal_name(sv, match.end())
+        is_chain = _looks_like_chain_stage(sv, clock_name)
         yield Site(
             kind=MutationKind.CLOCK_POLARITY_SWAP,
             line=line,
             column=column,
             snippet=original,
-            prediction=_predict(line, original, replacement),
+            prediction=_predict(
+                sv, line, original, replacement, is_chain_stage=is_chain
+            ),
         )
 
 

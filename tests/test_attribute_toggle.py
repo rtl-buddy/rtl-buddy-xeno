@@ -127,7 +127,11 @@ def test_seed_determinism_within_kind() -> None:
     [
         ("cdc_sync", {"CDC-002", "CDC-003"}),
         ("cdc_gray", {"CDC-019"}),
-        ("glitchless_clock_mux", {"CDC-008"}),
+        # CDC-010 is rtl-buddy-cdc's async-clock-mux rule. The earlier
+        # CDC-008 mapping was wrong (CDC-008 covers clock-pin-as-data,
+        # not unmarked clock-muxes) and surfaced via rtl-buddy-cdc#221
+        # / rtl-buddy-cdc#224 — see check_cdc_010 in rtl-buddy-cdc.
+        ("glitchless_clock_mux", {"CDC-010"}),
         ("reset_sync", {"RDC-001"}),
         ("reset_polarity", {"RDC-001", "RDC-007"}),
     ],

@@ -1,6 +1,6 @@
 [project]
 name = "rtl-buddy-xeno"
-version = "0.0.1"
+version = "0.0.2"
 description = "SystemVerilog AST-mutation corpus generator. Source-level CDC-aware and FPV-aware mutations for fuzzer and mutation-testing harnesses."
 readme = "README.md"
 license = "BSD-3-Clause"

@@ -177,14 +177,38 @@ def _splice_drop_block(sv: str, block_start: int, block_end: int) -> str:
 
 
 def _predict(lhs_name: str, line: int) -> Prediction:
+    """Conservative prediction.
+
+    The operator drops one stage from what *looks like* a sync chain
+    (single-clock always_ff, single LHS<=RHS body). Whether that
+    drop actually causes CDC-002 or CDC-018 to fire downstream
+    depends on the chain's pre-drop depth (CDC-002 fires when depth
+    drops below ``required_depth``, typically 2; CDC-018 fires on
+    cascaded sync stages of length ≥4). The Verible CST recogniser
+    can't see the surrounding chain shape from one always_ff in
+    isolation — so the operator drops the stage but doesn't make a
+    positive CDC-rule claim. The rationale records intent; the
+    downstream coverage report tracks which rules actually fire
+    on the mutated source.
+
+    Prior to the rtl-buddy-cdc#221 fuzz integration the prediction
+    declared ``cdc_rules_added = {CDC-002, CDC-018}`` unconditionally,
+    which over-claimed on the majority of corpus parents whose chain
+    was already shorter than the cascaded-threshold and didn't sit
+    at the required-depth boundary. See rtl-buddy-xeno PR commit
+    history for the bug-fix transition.
+    """
     return Prediction(
         rationale=(
             f"dropped sync-chain stage driving `{lhs_name}` at line {line}; "
-            "the downstream chain depth is reduced by one, so cdc#221's "
-            "CDC-002 (insufficient sync depth) should fire if the chain "
-            "head was previously at the minimum required depth"
+            "the downstream chain depth is reduced by one. CDC-002 fires "
+            "when the chain head was at the minimum required depth; "
+            "CDC-018 fires on cascaded chains. The Verible CST recogniser "
+            "sees one always_ff at a time and can't verify either "
+            "precondition from a single stage, so this prediction makes "
+            "no positive CDC-rule claim (cdc_rules_added stays empty); "
+            "the downstream coverage report observes the actual rule fires"
         ),
-        cdc_rules_added=frozenset({"CDC-002", "CDC-018"}),
         perturbs_signals=frozenset({lhs_name}),
         perturbs_liveness=False,
     )

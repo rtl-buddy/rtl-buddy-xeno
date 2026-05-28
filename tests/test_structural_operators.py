@@ -51,12 +51,22 @@ def test_bit_extract_permute_finds_two_modes_per_range() -> None:
     assert drops_lsb
 
 
-def test_bit_extract_permute_prediction_includes_cdc019_cdc020() -> None:
+def test_bit_extract_permute_prediction_conservative() -> None:
+    """The operator's prediction stays conservative: the rationale
+    *mentions* CDC-019 / CDC-020 (the relevant rules) but
+    ``cdc_rules_added`` stays empty because the operator can't
+    verify the surrounding sliced-bus reconvergence structure from
+    the bit-select site alone. Prior to rtl-buddy-cdc#221 fuzz
+    integration the prediction was unconditional CDC-019/CDC-020,
+    which over-claimed on the majority of corpus parents."""
     [first, *_] = Mutator.from_sv(_sv()).generate(
         [MutationKind.BIT_EXTRACT_PERMUTE], count=1
     )
-    assert "CDC-019" in first.prediction.cdc_rules_added
-    assert "CDC-020" in first.prediction.cdc_rules_added
+    assert first.prediction.cdc_rules_added == frozenset()
+    # Rationale still calls out the rules the mutation targets so
+    # the downstream consumer can see operator intent.
+    assert "CDC-019" in first.prediction.rationale
+    assert "CDC-020" in first.prediction.rationale
 
 
 def test_bit_extract_permute_skips_single_bit_selects() -> None:
@@ -120,12 +130,22 @@ def test_sync_chain_depth_perturb_drops_entire_always_ff() -> None:
     assert first.sv.count("always_ff") == sv.count("always_ff") - 1
 
 
-def test_sync_chain_depth_perturb_prediction_carries_cdc002() -> None:
+def test_sync_chain_depth_perturb_prediction_conservative() -> None:
+    """The operator's prediction stays conservative: the rationale
+    mentions CDC-002 and CDC-018 (the rules that would fire for
+    the right parent chain shape) but ``cdc_rules_added`` is empty.
+    Prior to rtl-buddy-cdc#221 fuzz integration the prediction was
+    unconditional CDC-002/CDC-018, which over-claimed on chains
+    that didn't sit at the required-depth boundary."""
     [first, *_] = Mutator.from_sv(_sv()).generate(
         [MutationKind.SYNC_CHAIN_DEPTH_PERTURB], count=1
     )
-    assert "CDC-002" in first.prediction.cdc_rules_added
-    assert "CDC-018" in first.prediction.cdc_rules_added
+    assert first.prediction.cdc_rules_added == frozenset()
+    assert "CDC-002" in first.prediction.rationale
+    assert "CDC-018" in first.prediction.rationale
+    # ``perturbs_signals`` is the operator's structural side-effect
+    # claim (which signal lost its driving flop) — that's verifiable
+    # from the CST alone, so we keep it as a positive prediction.
     assert len(first.prediction.perturbs_signals) == 1
 
 

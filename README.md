@@ -57,28 +57,37 @@ runs across multiple kinds.
 
 ## Mutation kinds
 
-Eleven operators covering both consumer pools. See umbrella
-[xeno#2](https://github.com/rtl-buddy/rtl-buddy-xeno/issues/2)
+Eleven operators covering both consumer pools, all implemented. See
+umbrella [xeno#2](https://github.com/rtl-buddy/rtl-buddy-xeno/issues/2)
 for the full table including MCY-expressibility.
 
-| Kind                                | Status      | Used by         | Parser layer       | Exercises                       |
-| ----------------------------------- | ----------- | --------------- | ------------------ | ------------------------------- |
-| `CLOCK_POLARITY_SWAP`               | implemented | cdc#221         | regex (no extras)  | CDC-006                         |
-| `ATTRIBUTE_TOGGLE`                  | implemented | cdc#221         | regex (no extras)  | CDC-002 / -003 / -008 / -019 / RDC-001 / -007 depending on attribute |
-| `ASSIGN_DROP`                       | implemented | rtl_buddy#206   | Verible + slang    | property survival on the LHS    |
-| `SYNC_CHAIN_DEPTH_PERTURB`          | stub (#221) | cdc#221         | Verible + slang    | CDC-002, CDC-018                |
-| `BIT_EXTRACT_PERMUTE`               | stub (#221) | cdc#221         | Verible + slang    | CDC-019, CDC-020                |
-| `RESET_POLARITY_FLIP`               | stub (#221) | cdc#221         | Verible + slang    | RDC-007                         |
-| `ARITH_FLIP` (`+ ↔ -`, `* ↔ /`)     | stub (#206) | rtl_buddy#206   | Verible (+ optional slang) | property survival       |
-| `BIT_OP_FLIP` (`& ↔ \|`, `~` ±)     | stub (#206) | rtl_buddy#206   | Verible (+ optional slang) | property survival       |
-| `COND_NEGATE`                       | stub (#206) | rtl_buddy#206   | Verible            | property survival               |
-| `COND_CONST`                        | stub (#206) | rtl_buddy#206   | Verible            | property survival               |
-| `PORT_BINDING_SWAP`                 | stub (#206) | rtl_buddy#206   | Verible            | property survival + maybe CDC   |
+| Kind                            | Status      | Used by       | Parser layer               | Exercises                                                  |
+| ------------------------------- | ----------- | ------------- | -------------------------- | ---------------------------------------------------------- |
+| `CLOCK_POLARITY_SWAP`           | implemented | cdc#221       | regex (no extras)          | CDC-016 (chain-stage gated; standalone flops predict nothing) |
+| `ATTRIBUTE_TOGGLE`              | implemented | cdc#221       | regex (no extras)          | CDC-002 / -003 / -010 / -019, RDC-001 / -007 (per attribute) |
+| `ASSIGN_DROP`                   | implemented | rtl_buddy#206 | Verible + slang            | property survival on the LHS                               |
+| `SYNC_CHAIN_DEPTH_PERTURB`      | implemented | cdc#221       | Verible                    | CDC-002 / -018 (rationale only — no positive claim)        |
+| `BIT_EXTRACT_PERMUTE`           | implemented | cdc#221       | Verible                    | CDC-019 / -020 (rationale only — no positive claim)        |
+| `RESET_POLARITY_FLIP`           | implemented | cdc#221       | Verible (+ optional slang) | RDC-007 (rationale only — no positive claim)               |
+| `ARITH_FLIP` (`+ ↔ -`, `* ↔ /`) | implemented | rtl_buddy#206 | Verible (+ optional slang) | property survival                                          |
+| `BIT_OP_FLIP` (`& ↔ \|`, `~` ±) | implemented | rtl_buddy#206 | Verible (+ optional slang) | property survival                                          |
+| `COND_NEGATE`                   | implemented | rtl_buddy#206 | Verible                    | property survival                                          |
+| `COND_CONST`                    | implemented | rtl_buddy#206 | Verible                    | property survival                                          |
+| `PORT_BINDING_SWAP`             | implemented | rtl_buddy#206 | Verible                    | property survival + maybe CDC                              |
 
-Stubbed kinds raise `NotImplementedError` pointing at the design
-issue rather than silently skipping. They are wired into the
-`MutationKind` enum so consumers compile against the final surface
-even while the operator pool grows.
+All eleven kinds are implemented — `IMPLEMENTED_KINDS == frozenset(MutationKind)`,
+no operator raises `NotImplementedError`. The CDC rule-id predictions
+are deliberately conservative: an operator only populates
+`cdc_rules_added` when it can structurally justify the claim from its
+parser view (`CLOCK_POLARITY_SWAP` requires a ≥2-stage chain heuristic;
+`ATTRIBUTE_TOGGLE` keys off a known attribute name). The context-blind
+operators (`SYNC_CHAIN_DEPTH_PERTURB`, `BIT_EXTRACT_PERMUTE`,
+`RESET_POLARITY_FLIP`) leave `cdc_rules_added` empty and record the
+candidate rule in the `rationale` instead, so the downstream coverage
+report measures the actual fire rather than trusting an over-confident
+guess. The rule-ids above mirror `rtl-buddy-cdc`'s rule pack by
+convention — they are string literals, with no code dependency on
+rtl-buddy-cdc.
 
 ## Parser layering
 
@@ -167,7 +176,7 @@ uv run mypy
 uv run pytest -q
 ```
 
-Python 3.13, src-layout, frozen dataclasses, pure functions in the
+Python ≥3.11, src-layout, frozen dataclasses, pure functions in the
 operator path. Conventions mirror `rtl-buddy-cdc`.
 
 ## Design references

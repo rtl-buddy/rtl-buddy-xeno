@@ -1,6 +1,6 @@
 [project]
 name = "rtl-buddy-xeno"
-version = "0.0.2"
+dynamic = ["version"]
 description = "SystemVerilog AST-mutation corpus generator. Source-level CDC-aware and FPV-aware mutations for fuzzer and mutation-testing harnesses."
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -81,9 +81,26 @@ slang = [
 [tool.uv.sources]
 rtl-buddy-view = { git = "https://github.com/rtl-buddy/rtl-buddy-view.git", tag = "v0.2.0" }
 
+# hatchling + hatch-vcs derive the version from the git tag — required
+# by the release-on-merge workflow, which pushes the tag and builds from
+# it in the same run (same setup as rtl_buddy).
 [build-system]
-requires = ["uv_build>=0.11.7,<0.12.0"]
-build-backend = "uv_build"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rtl_buddy_xeno"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/rtl_buddy_xeno",
+  "README.md",
+  "LICENSE",
+  "pyproject.toml",
+]
 
 [dependency-groups]
 lint = [

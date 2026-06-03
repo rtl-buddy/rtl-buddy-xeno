@@ -496,7 +496,6 @@ dependencies = [
 
 [[package]]
 name = "rtl-buddy-xeno"
-version = "0.0.2"
 source = { editable = "." }
 
 [package.optional-dependencies]
@@ -526,7 +525,7 @@ requires-dist = [
     { name = "pyslang", marker = "extra == 'slang'", specifier = ">=10,<11" },
     { name = "rtl-buddy-view", marker = "extra == 'verible'", git = "https://github.com/rtl-buddy/rtl-buddy-view.git?tag=v0.2.0" },
 ]
-provides-extras = ["verible", "slang"]
+provides-extras = ["slang", "verible"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -52,7 +52,9 @@ dependencies = []
 # imports this so the no-extras install path stays working (only
 # CLOCK_POLARITY_SWAP runs without `[verible]`).
 verible = [
-    "rtl-buddy-view>=0.2.0,<0.3.0",
+    # Floor at 0.2.1: the first PyPI release. The v0.2.0 git tag predates
+    # the include-dir filelist fix and ships no prebuilt SPA.
+    "rtl-buddy-view>=0.2.1,<0.3.0",
 ]
 # Pyslang elaboration. Required by the four operators that need semantic
 # context (sync-chain identification, bit-extract slice width, reset-chain
@@ -69,17 +71,6 @@ slang = [
 "Releases" = "https://github.com/rtl-buddy/rtl-buddy-xeno/releases"
 "Design (Stage 3)" = "https://github.com/rtl-buddy/rtl-buddy-cdc/issues/221"
 "Design (Stage 4)" = "https://github.com/rtl-buddy/rtl-buddy-cdc/issues/222"
-
-# rtl-buddy-view is not on PyPI today; the `[verible]` extra resolves via
-# a GitHub git source for local development until view publishes. The
-# version constraint in [project.optional-dependencies] (>=0.2.0,<0.3.0)
-# still applies. This [tool.uv.sources] block is read by uv during
-# development and is NOT included in the published wheel's metadata — so
-# once view is on PyPI, PyPI consumers resolve cleanly via the version
-# constraint alone; this block can be deleted from this file in the same
-# change that lands view's first published release.
-[tool.uv.sources]
-rtl-buddy-view = { git = "https://github.com/rtl-buddy/rtl-buddy-view.git", tag = "v0.2.0" }
 
 # hatchling + hatch-vcs derive the version from the git tag — required
 # by the release-on-merge workflow, which pushes the tag and builds from

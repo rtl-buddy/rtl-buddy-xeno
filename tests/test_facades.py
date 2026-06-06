@@ -72,6 +72,51 @@ def test_cst_offset_index_raises_clear_importerror_when_view_missing(
         cst.offset_index("module a; endmodule\n")
 
 
+# --- cst.py view-floor guard ------------------------------------------------
+
+
+def test_version_tuple_drops_nonnumeric_suffix() -> None:
+    """A pre-release of the floor compares equal to it (rc suffix dropped)."""
+    assert cst._version_tuple("0.2.1") == (0, 2, 1)
+    assert cst._version_tuple("0.2.1rc1") == (0, 2, 1)
+    assert cst._version_tuple("0.2.0") < cst._version_tuple("0.2.1")
+
+
+def test_check_view_version_skips_when_metadata_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No distribution metadata (e.g. a test stub) → skip silently."""
+    import importlib.metadata
+
+    def _raise(_name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(importlib.metadata, "version", _raise)
+    cst._check_view_version()  # must not raise
+
+
+def test_check_view_version_raises_on_too_old_present_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A present-but-too-old view fails with an actionable upgrade hint."""
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.2.0")
+    with pytest.raises(ImportError, match=r"0\.2\.1"):
+        cst._check_view_version()
+
+
+def test_check_view_version_accepts_floor_and_newer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The floor itself and any newer (including post-cap) version pass."""
+    import importlib.metadata
+
+    for ver in ("0.2.1", "0.2.1rc1", "0.3.0", "1.0.0"):
+        monkeypatch.setattr(importlib.metadata, "version", lambda _name, v=ver: v)
+        cst._check_view_version()  # must not raise
+
+
 # --- cst.py walkers (pure-Python; no extras needed for these tests) ---------
 
 

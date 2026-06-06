@@ -133,8 +133,8 @@ pip install rtl-buddy-xeno
 
 # With Verible CST support (required by every structural operator
 # except CLOCK_POLARITY_SWAP and ATTRIBUTE_TOGGLE). Pulls in
-# `rtl-buddy-view>=0.2.0`. NB: until rtl-buddy-view publishes to PyPI
-# this extra is only installable via git source — for local
+# `rtl-buddy-view>=0.2.1` (a floor, with no upper cap — view is pre-1.0
+# and we don't speculatively block its next minor). For local
 # development use `uv sync --extra verible` against this repo.
 pip install "rtl-buddy-xeno[verible]"
 

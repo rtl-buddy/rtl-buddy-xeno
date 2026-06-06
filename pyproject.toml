@@ -53,8 +53,12 @@ dependencies = []
 # CLOCK_POLARITY_SWAP runs without `[verible]`).
 verible = [
     # Floor at 0.2.1: the first PyPI release. The v0.2.0 git tag predates
-    # the include-dir filelist fix and ships no prebuilt SPA.
-    "rtl-buddy-view>=0.2.1,<0.3.0",
+    # the include-dir filelist fix and ships no prebuilt SPA. No upper
+    # cap: rtl-buddy-view is pre-1.0 and we don't speculatively block its
+    # next minor. The floor is repeated at import time in `cst.py`'s lazy
+    # path (a present-but-too-old git/editable view fails with a clear
+    # upgrade hint instead of an obscure AttributeError).
+    "rtl-buddy-view>=0.2.1",
 ]
 # Pyslang elaboration. Required by the four operators that need semantic
 # context (sync-chain identification, bit-extract slice width, reset-chain

@@ -526,7 +526,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "pyslang", marker = "extra == 'slang'", specifier = ">=10,<11" },
-    { name = "rtl-buddy-view", marker = "extra == 'verible'", specifier = ">=0.2.1,<0.3.0" },
+    { name = "rtl-buddy-view", marker = "extra == 'verible'", specifier = ">=0.2.1" },
 ]
 provides-extras = ["slang", "verible"]
 

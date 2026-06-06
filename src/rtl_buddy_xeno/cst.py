@@ -20,6 +20,8 @@ upstream that made these helpers public.
 
 from __future__ import annotations
 
+import importlib.metadata
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -27,13 +29,61 @@ if TYPE_CHECKING:
     from rtl_buddy_view.offsets import OffsetIndex
 
 
+# Minimum rtl-buddy-view release this facade targets. Kept in sync with
+# the `verible` extra's `>=` floor in pyproject.toml. The pyproject floor
+# guards pip/uv resolves; `_check_view_version()` repeats it on the lazy
+# import path so a too-old git/editable view (which bypasses the resolve
+# floor) fails with a friendly upgrade hint instead of an obscure
+# AttributeError mid-mutation. There is deliberately no upper cap — view
+# is pre-1.0 and we don't speculatively block its next minor.
+_VIEW_MIN_VERSION = "0.2.1"
+
+
 _IMPORT_HINT = (
     "rtl-buddy-xeno's Verible-CST operators require the `[verible]` extra. "
     "Install with `pip install rtl-buddy-xeno[verible]` (or "
     "`uv pip install rtl-buddy-xeno[verible]`). The extra pulls in "
-    "`rtl-buddy-view>=0.2.0` which ships the public CST cache + offset "
-    "helpers — see view#109."
+    f"`rtl-buddy-view>={_VIEW_MIN_VERSION}` which ships the public CST cache "
+    "+ offset helpers — see view#109."
 )
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """Leading (major, minor, patch) ints of a PEP 440 version string.
+
+    Enough for a floor comparison; non-numeric suffixes (rc/dev/+local)
+    are dropped, so a pre-release of the floor compares equal to it.
+    """
+    parts = []
+    for segment in version.split(".")[:3]:
+        match = re.match(r"\d+", segment)
+        parts.append(int(match.group()) if match else 0)
+    return tuple(parts)
+
+
+def _check_view_version() -> None:
+    """Fail fast when a present-but-too-old rtl-buddy-view is installed.
+
+    The `verible` extra's `>=` floor in pyproject.toml guards pip/uv
+    resolves, but git and editable installs bypass it. This repeats the
+    floor at import time so view drift below ``_VIEW_MIN_VERSION`` (e.g.
+    the v0.2.0 git tag, which predates the include-dir filelist fix and
+    ships no prebuilt SPA) surfaces as a friendly hint, not an obscure
+    AttributeError mid-mutation. Skipped when the installed version can't
+    be read (no distribution metadata — e.g. a test stub); there the
+    resolve-time floor and a successful import stand in.
+    """
+    try:
+        installed = importlib.metadata.version("rtl-buddy-view")
+    except importlib.metadata.PackageNotFoundError:
+        return
+    if _version_tuple(installed) < _version_tuple(_VIEW_MIN_VERSION):
+        raise ImportError(
+            f"rtl-buddy-xeno's `[verible]` operators require "
+            f"rtl-buddy-view >= {_VIEW_MIN_VERSION}, but {installed} is "
+            f"installed. Upgrade it with:\n"
+            f'    pip install -U "rtl-buddy-view >= {_VIEW_MIN_VERSION}"'
+        )
 
 
 def _import_view_cst() -> Any:
@@ -41,6 +91,7 @@ def _import_view_cst() -> Any:
         from rtl_buddy_view import cst_cache  # type: ignore[import-not-found]
     except ImportError as exc:
         raise ImportError(_IMPORT_HINT) from exc
+    _check_view_version()
     return cst_cache
 
 
@@ -49,6 +100,7 @@ def _import_view_offsets() -> Any:
         from rtl_buddy_view import offsets  # type: ignore[import-not-found]
     except ImportError as exc:
         raise ImportError(_IMPORT_HINT) from exc
+    _check_view_version()
     return offsets
 
 
@@ -57,6 +109,7 @@ def _import_view_verible() -> Any:
         from rtl_buddy_view.frontend import verible  # type: ignore[import-not-found]
     except ImportError as exc:
         raise ImportError(_IMPORT_HINT) from exc
+    _check_view_version()
     return verible
 
 

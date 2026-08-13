@@ -97,7 +97,7 @@ jobs, each operator picks which two or three it needs:
 
 1. **Find candidate sites** — locate operator tokens in legal SV
    positions (not inside strings, comments, `` `define `` bodies).
-   Source-faithful CST. **Verible**, via `rtl-buddy-view`'s public
+   Source-faithful CST. **Verible**, via the viewer's public
    helpers (`rtl_buddy_view.cst_cache` etc., promoted in
    [view#109](https://github.com/rtl-buddy/rtl-buddy-view/issues/109)).
 2. **Semantic gating** — "is this `+` inside a `parameter` expression,
@@ -133,9 +133,14 @@ pip install rtl-buddy-xeno
 
 # With Verible CST support (required by every structural operator
 # except CLOCK_POLARITY_SWAP and ATTRIBUTE_TOGGLE). Pulls in
-# `rtl-buddy-view>=0.2.1` (a floor, with no upper cap — view is pre-1.0
-# and we don't speculatively block its next minor). For local
-# development use `uv sync --extra verible` against this repo.
+# `rtl-buddy-sch>=0.7.0` (a floor, with no upper cap — the viewer is
+# pre-1.0 and we don't speculatively block its next minor). 0.7.0 is
+# the first release under that name: the viewer's distribution renamed
+# rtl-buddy-view -> rtl-buddy-sch there, and `rtl-buddy-view` is frozen
+# at 0.5.0. If you already have the old dist, uninstall it first —
+# `pip uninstall -y rtl-buddy-view` — so a single distribution owns the
+# `rtl_buddy_view` import package. For local development use
+# `uv sync --extra verible` against this repo.
 pip install "rtl-buddy-xeno[verible]"
 
 # With pyslang elaboration (used by the four semantically-gated

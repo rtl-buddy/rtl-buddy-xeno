@@ -46,19 +46,23 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-# Verible CST substrate (via rtl-buddy-view's public helpers — view#109).
+# Verible CST substrate (via the viewer's public helpers — view#109).
 # Required by ATTRIBUTE_TOGGLE, ASSIGN_DROP, and every other operator that
 # needs to walk the SV source structurally. The `cst.py` facade lazy-
 # imports this so the no-extras install path stays working (only
 # CLOCK_POLARITY_SWAP runs without `[verible]`).
 verible = [
-    # Floor at 0.2.1: the first PyPI release. The v0.2.0 git tag predates
-    # the include-dir filelist fix and ships no prebuilt SPA. No upper
-    # cap: rtl-buddy-view is pre-1.0 and we don't speculatively block its
-    # next minor. The floor is repeated at import time in `cst.py`'s lazy
-    # path (a present-but-too-old git/editable view fails with a clear
-    # upgrade hint instead of an obscure AttributeError).
-    "rtl-buddy-view>=0.2.1",
+    # The viewer's PyPI distribution renamed rtl-buddy-view -> rtl-buddy-sch
+    # at 0.7.0 (rtl-buddy/rtl-buddy-sch#157); releases <=0.5.0 shipped as
+    # `rtl-buddy-view` and that name is frozen there. Same project, same
+    # `rtl_buddy_view` import package, same public API — only the dist
+    # metadata moved, so this floor is the first release under the new
+    # name rather than a capability bump. No upper cap: the viewer is
+    # pre-1.0 and we don't speculatively block its next minor. `cst.py`'s
+    # lazy path repeats a floor at import time under BOTH dist names (a
+    # too-old git/editable viewer bypasses this resolve floor and would
+    # otherwise fail with an obscure AttributeError mid-mutation).
+    "rtl-buddy-sch>=0.7.0",
 ]
 # Pyslang elaboration. Required by the four operators that need semantic
 # context (sync-chain identification, bit-extract slice width, reset-chain

@@ -1,4 +1,4 @@
-"""Verible CST facade — thin wrapper over ``rtl-buddy-view`` public API.
+"""Verible CST facade — thin wrapper over the viewer's public API.
 
 This module is the bridge between xeno's operators and view's
 Verible-CST infrastructure (locator + content-hashed cache + offset
@@ -29,21 +29,39 @@ if TYPE_CHECKING:
     from rtl_buddy_view.offsets import OffsetIndex
 
 
-# Minimum rtl-buddy-view release this facade targets. Kept in sync with
-# the `verible` extra's `>=` floor in pyproject.toml. The pyproject floor
-# guards pip/uv resolves; `_check_view_version()` repeats it on the lazy
-# import path so a too-old git/editable view (which bypasses the resolve
-# floor) fails with a friendly upgrade hint instead of an obscure
-# AttributeError mid-mutation. There is deliberately no upper cap — view
-# is pre-1.0 and we don't speculatively block its next minor.
+# The viewer's PyPI distribution names, newest first. It renamed
+# rtl-buddy-view -> rtl-buddy-sch at 0.7.0 (rtl-buddy/rtl-buddy-sch#157);
+# `rtl-buddy-view` is frozen at 0.5.0. The import package `rtl_buddy_view`
+# did NOT rename, so an environment holding only the old distribution
+# still imports and works — which is why the floor guard below has to ask
+# about both names before concluding "no metadata". Newest first, so a
+# machine carrying both (pip leaves the old dist's metadata behind unless
+# it is uninstalled) is judged on the dist that won.
+_VIEW_DIST_NAMES = ("rtl-buddy-sch", "rtl-buddy-view")
+
+# Minimum viewer release this facade targets, compared against whichever
+# distribution is installed. It stays at the legacy dist's floor — 0.2.1,
+# the first PyPI release; the v0.2.0 git tag predates the include-dir
+# filelist fix and ships no prebuilt SPA — because a user on
+# `rtl-buddy-view` 0.2.1-0.5.0 is fine: every helper this facade calls is
+# present there. Every `rtl-buddy-sch` release is >=0.7.0 and clears it
+# outright; the comparison still runs on it, because one path that judges
+# whichever dist is installed is easier to trust than a branch that waves
+# one of them through by name. There is deliberately no upper cap — the
+# viewer is pre-1.0 and we don't speculatively block its next minor.
 _VIEW_MIN_VERSION = "0.2.1"
 
+# First release under the renamed distribution. This is what the
+# `verible` extra's `>=` floor in pyproject.toml pins and what the hints
+# below tell people to install; `_VIEW_MIN_VERSION` above is the
+# import-time floor and is deliberately the looser of the two.
+_SCH_MIN_VERSION = "0.7.0"
 
 _IMPORT_HINT = (
     "rtl-buddy-xeno's Verible-CST operators require the `[verible]` extra. "
     "Install with `pip install rtl-buddy-xeno[verible]` (or "
     "`uv pip install rtl-buddy-xeno[verible]`). The extra pulls in "
-    f"`rtl-buddy-view>={_VIEW_MIN_VERSION}` which ships the public CST cache "
+    f"`rtl-buddy-sch>={_SCH_MIN_VERSION}` which ships the public CST cache "
     "+ offset helpers — see view#109."
 )
 
@@ -61,28 +79,57 @@ def _version_tuple(version: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
+def _view_dist_version() -> tuple[str, str] | None:
+    """Return ``(dist name, version)`` for the installed viewer, if any.
+
+    Probes :data:`_VIEW_DIST_NAMES` in order — renamed name first — and
+    returns the first one that has distribution metadata. ``None`` means
+    neither name is installed, which is not the same as "the viewer is
+    missing": the import package is what the operators actually need,
+    and a git checkout on ``sys.path`` can provide it with no metadata
+    at all.
+    """
+    for dist in _VIEW_DIST_NAMES:
+        try:
+            return dist, importlib.metadata.version(dist)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    return None
+
+
 def _check_view_version() -> None:
-    """Fail fast when a present-but-too-old rtl-buddy-view is installed.
+    """Fail fast when a present-but-too-old viewer is installed.
 
     The `verible` extra's `>=` floor in pyproject.toml guards pip/uv
-    resolves, but git and editable installs bypass it. This repeats the
-    floor at import time so view drift below ``_VIEW_MIN_VERSION`` (e.g.
-    the v0.2.0 git tag, which predates the include-dir filelist fix and
-    ships no prebuilt SPA) surfaces as a friendly hint, not an obscure
-    AttributeError mid-mutation. Skipped when the installed version can't
-    be read (no distribution metadata — e.g. a test stub); there the
-    resolve-time floor and a successful import stand in.
+    resolves, but git and editable installs bypass it. This repeats a
+    floor at import time so viewer drift below ``_VIEW_MIN_VERSION``
+    (e.g. the v0.2.0 git tag, which predates the include-dir filelist
+    fix and ships no prebuilt SPA) surfaces as a friendly hint, not an
+    obscure AttributeError mid-mutation. Skipped when no viewer
+    distribution can be read under either of its names (e.g. a test stub
+    or a bare checkout); there the resolve-time floor and a successful
+    import stand in.
     """
-    try:
-        installed = importlib.metadata.version("rtl-buddy-view")
-    except importlib.metadata.PackageNotFoundError:
+    found = _view_dist_version()
+    if found is None:
         return
+    dist, installed = found
     if _version_tuple(installed) < _version_tuple(_VIEW_MIN_VERSION):
+        # The remedy leads with the uninstall on purpose: `pip` has no
+        # rename metadata, so installing `rtl-buddy-sch` over a present
+        # `rtl-buddy-view` does not upgrade it — it leaves two
+        # distributions shipping the same `rtl_buddy_view` import package
+        # with RECORDs that disagree about who owns which file.
+        # `pip uninstall -y` on an absent dist warns and exits 0, so the
+        # chain is safe to paste on a machine that only ever had the new
+        # name.
         raise ImportError(
-            f"rtl-buddy-xeno's `[verible]` operators require "
-            f"rtl-buddy-view >= {_VIEW_MIN_VERSION}, but {installed} is "
-            f"installed. Upgrade it with:\n"
-            f'    pip install -U "rtl-buddy-view >= {_VIEW_MIN_VERSION}"'
+            f"rtl-buddy-xeno's `[verible]` operators require the viewer at "
+            f">= {_VIEW_MIN_VERSION}, but {dist} {installed} is installed. "
+            f"The viewer's distribution has since been renamed to "
+            f"rtl-buddy-sch; upgrade with:\n"
+            f"    pip uninstall -y rtl-buddy-view && "
+            f'pip install -U "rtl-buddy-sch >= {_SCH_MIN_VERSION}"'
         )
 
 
@@ -126,7 +173,7 @@ def parse(
     falls back to env / XDG / home per view's resolution ladder.
 
     Raises :class:`ImportError` with a hint about the ``[verible]``
-    extra if ``rtl-buddy-view`` is not installed.
+    extra if the viewer (``rtl-buddy-sch``) is not installed.
     """
     cst_cache = _import_view_cst()
     verible = _import_view_verible()

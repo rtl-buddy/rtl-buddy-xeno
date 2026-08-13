@@ -97,7 +97,7 @@ def test_every_mutant_parses_with_verible(kind: MutationKind, tmp_path: Path) ->
         pytest.skip(f"no fixture registered for {kind.value}")
     if kind is MutationKind.ASSIGN_DROP:
         # ASSIGN_DROP needs the [verible] extra (uses cst.py facade for
-        # the CST walk). Skip if rtl-buddy-view isn't installed.
+        # the CST walk). Skip if the viewer isn't installed.
         pytest.importorskip("rtl_buddy_view")
 
     fixture = _FIXTURES[kind]
@@ -147,7 +147,7 @@ def test_every_mutant_elaborates_with_pyslang(
     if kind not in _FIXTURES:
         pytest.skip(f"no fixture registered for {kind.value}")
     if kind in {MutationKind.ATTRIBUTE_TOGGLE, MutationKind.ASSIGN_DROP}:
-        # These operators need rtl-buddy-view for the cst.py facade.
+        # These operators need the viewer (`rtl-buddy-sch`) for cst.py.
         # ATTRIBUTE_TOGGLE uses cst.py for its scanner today via the
         # facade import chain; ASSIGN_DROP uses Verible directly.
         # Skip if the extra is missing — pyslang alone isn't enough.

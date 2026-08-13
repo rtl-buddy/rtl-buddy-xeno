@@ -22,9 +22,11 @@ on:
       - 'tests/**/*.py'
       - 'tests/fixtures/**'
 
-# Pinned to match rtl-buddy-view's vendored binary (view#109 sets this
-# tag in src/rtl_buddy_view/_verible_install.py). Rotate in lockstep
-# when bumping view's pin.
+# Pinned to match the viewer's vendored binary — the `rtl-buddy-sch`
+# distribution, renamed from `rtl-buddy-view` at 0.7.0 (sch#157); the
+# import package it ships did not rename, so the tag still lives in
+# src/rtl_buddy_view/_verible_install.py (view#109). Rotate in lockstep
+# when bumping the viewer's pin.
 env:
   VERIBLE_VERSION: "v0.0-4053-g89d4d98a"
 

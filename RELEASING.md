@@ -75,19 +75,23 @@ The `version/{patch,minor,major}` labels must exist on the repo
 
 ### 4. Verify the [verible] extra's resolvability
 
-`rtl-buddy-xeno[verible]` depends on `rtl-buddy-view>=0.2.0,<0.3.0`.
-**The [verible] extra is unresolvable from PyPI until rtl-buddy-view
-is also published.** Two consumer scenarios:
+`rtl-buddy-xeno[verible]` depends on `rtl-buddy-sch>=0.7.0` — the
+viewer's PyPI distribution, which renamed from `rtl-buddy-view` at
+0.7.0 ([sch#157](https://github.com/rtl-buddy/rtl-buddy-sch/issues/157)).
+Releases up to 0.5.0 are on PyPI under the old name and it is frozen
+there; 0.7.0 onward is the same project under the new one. Both that
+extra and `[slang]`'s `pyslang` resolve from PyPI unaided, so neither
+blocks a release — what to verify here is that the extra still names
+the distribution the viewer currently publishes under.
 
-- Without `[verible]`: works as soon as xeno is on PyPI. Only the
-  regex-based operators (`CLOCK_POLARITY_SWAP`, `ATTRIBUTE_TOGGLE`)
-  function.
-- With `[verible]`: blocked until view is on PyPI. Drop the
-  `[tool.uv.sources]` block from `pyproject.toml` in the same change
-  that lands view's PyPI debut, so PyPI consumers resolve cleanly
-  via the version constraint.
+Without `[verible]`, only the regex-based operators
+(`CLOCK_POLARITY_SWAP`, `ATTRIBUTE_TOGGLE`) function; that path needs
+nothing but xeno itself.
 
-The `[slang]` extra already resolves cleanly (pyslang is on PyPI).
+Consumers carrying the old distribution should `pip uninstall -y
+rtl-buddy-view` before installing: pip has no rename metadata, so both
+dists would otherwise be installed at once, each claiming the same
+`rtl_buddy_view` import package.
 
 ## Rollback
 

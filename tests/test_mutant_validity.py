@@ -62,6 +62,7 @@ _FIXTURES: dict[MutationKind, Path] = {
     MutationKind.SYNC_CHAIN_DEPTH_PERTURB: _FIXTURES_DIR / "sync_and_slices.sv",
     MutationKind.CHAIN_STAGE_INSERT: _FIXTURES_DIR / "sync_chain_readers.sv",
     MutationKind.COMB_BETWEEN_STAGES: _FIXTURES_DIR / "sync_chain_readers.sv",
+    MutationKind.RESET_FANIN_MERGE: _FIXTURES_DIR / "reset_fanin.sv",
     MutationKind.BIT_EXTRACT_PERMUTE: _FIXTURES_DIR / "sync_and_slices.sv",
 }
 

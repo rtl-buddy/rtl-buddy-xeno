@@ -8,7 +8,9 @@ Reducing the chain depth by one is the mutation cdc#221's CDC-002
 guards against ("synchronizer must have ≥2 stages") — the cdc fuzz
 oracle should observe CDC-002 fire on the mutated source.
 
-Heuristics for "looks like a sync-chain stage":
+Heuristics for "looks like a sync-chain stage" live in
+:mod:`._chain_helpers` (shared with ``CHAIN_STAGE_INSERT`` so both
+directions of the chain mutation see an identical candidate set):
 
 1. The ``always_ff`` block's sensitivity list has exactly one edge
    token (``posedge``/``negedge``) on a single signal — the clock.
@@ -25,136 +27,25 @@ LHS will reference an undriven signal. Pyslang's typical response is
 a Warning (uninitialised use), not an Error — the validity gate
 accepts the mutant.
 
-Insertion mode (adding a stage) is deferred. It requires synthesising
-a fresh register name + always_ff block + rewiring downstream
-references, all of which are textual operations on the source.
-Cleaner shipped as a separate follow-up once the deletion mode is
-stable.
+Insertion mode — synthesising a fresh register, its ``always_ff`` and
+the downstream rewiring, so the chain gets *deeper* rather than
+shallower — shipped separately as ``CHAIN_STAGE_INSERT``
+(:mod:`._chain_stage_insert`, xeno#13). The two operators share this
+module's stage recogniser via :mod:`._chain_helpers`.
 """
 
 from __future__ import annotations
 
-import hashlib
 import random
-import tempfile
 from collections.abc import Iterator
-from pathlib import Path
-from typing import Any
 
-from rtl_buddy_xeno import cst as _cst
 from rtl_buddy_xeno.mutator import MutationKind, Mutant, Prediction, Site
-
-
-def _sv_to_tempfile(sv: str) -> Path:
-    digest = hashlib.sha256(sv.encode("utf-8")).hexdigest()[:16]
-    tmpdir = Path(tempfile.gettempdir()) / "rtl-buddy-xeno"
-    tmpdir.mkdir(parents=True, exist_ok=True)
-    target = tmpdir / f"sv-{digest}.sv"
-    if not target.exists() or target.read_text() != sv:
-        target.write_text(sv)
-    return target
-
-
-def _byte_to_line_col(sv: str, byte_offset: int) -> tuple[int, int]:
-    head = sv.encode("utf-8")[:byte_offset]
-    line = head.count(b"\n") + 1
-    last_newline = head.rfind(b"\n")
-    column = (byte_offset - last_newline) if last_newline >= 0 else byte_offset + 1
-    return line, column
-
-
-def _first_identifier(node: Any) -> str | None:
-    """Return the text of the first ``SymbolIdentifier`` leaf under ``node``."""
-    if isinstance(node, dict):
-        if node.get("tag") == "SymbolIdentifier" and node.get("text"):
-            return str(node["text"])
-        for child in node.get("children", []) or []:
-            name = _first_identifier(child)
-            if name:
-                return name
-    elif isinstance(node, list):
-        for child in node:
-            name = _first_identifier(child)
-            if name:
-                return name
-    return None
-
-
-def _is_single_clock_sensitivity(always_ff_node: dict) -> bool:
-    """Return True iff the always_ff has exactly one ``posedge``/``negedge`` edge.
-
-    Walks the event control to count edge tokens. A sync-chain stage
-    has one clock edge and no async reset; if we see two edges,
-    it's likely a clock+reset pair and we skip.
-    """
-    event_controls = _cst.walk_subtrees(always_ff_node, "kEventExpressionList")
-    if not event_controls:
-        # Fallback: a single kEventExpression with no list wrapper.
-        evs = _cst.walk_subtrees(always_ff_node, "kEventExpression")
-        return len(evs) == 1
-    edge_count = 0
-    for ev in _cst.walk_subtrees(always_ff_node, "kEventExpression"):
-        children = [c for c in (ev.get("children", []) or []) if isinstance(c, dict)]
-        if children and children[0].get("tag") in ("posedge", "negedge"):
-            edge_count += 1
-    return edge_count == 1
-
-
-def _single_nonblocking(always_ff_node: dict) -> tuple[str, int, int] | None:
-    """If the always_ff body is exactly one non-blocking assignment
-    ``LHS <= RHS;``, return ``(lhs_name, block_start, block_end)``.
-
-    The block start/end span the entire ``always_ff @(...) STMT;``
-    construct so the deletion can splice it cleanly out.
-    """
-    nb_assigns = _cst.walk_subtrees(always_ff_node, "kNonblockingAssignmentStatement")
-    if len(nb_assigns) != 1:
-        return None
-    # Reject if the body has any other statement-shape: if, case,
-    # blocking-assignment, etc. Walking these tags inside the block
-    # and finding any of them disqualifies the block.
-    disqualifying = (
-        "kConditionalStatement",
-        "kCaseStatement",
-        "kBlockingAssignmentStatement",
-        "kForLoopStatement",
-        "kWhileLoopStatement",
-    )
-    for tag in disqualifying:
-        if _cst.walk_subtrees(always_ff_node, tag):
-            return None
-    nb = nb_assigns[0]
-    lhs_name = _first_identifier(nb)
-    if lhs_name is None:
-        return None
-    # The block to delete is the always_ff node itself, plus any leading
-    # whitespace on the same line and trailing newline.
-    try:
-        block_start, block_end = _cst.node_span(always_ff_node)
-    except ValueError:
-        return None
-    return lhs_name, block_start, block_end
+from rtl_buddy_xeno.operators import _chain_helpers as _chain
 
 
 def _find_sync_stages(sv: str) -> list[tuple[int, int, str]]:
     """Return ``(block_start, block_end, lhs_name)`` per candidate stage."""
-    path = _sv_to_tempfile(sv)
-    cst_root = _cst.parse(path)
-    sites: list[tuple[int, int, str]] = []
-    seen: set[tuple[int, int]] = set()
-    for always_ff in _cst.walk_subtrees(cst_root, "kAlwaysStatement"):
-        if not _is_single_clock_sensitivity(always_ff):
-            continue
-        single = _single_nonblocking(always_ff)
-        if single is None:
-            continue
-        lhs_name, block_start, block_end = single
-        if (block_start, block_end) in seen:
-            continue
-        seen.add((block_start, block_end))
-        sites.append((block_start, block_end, lhs_name))
-    sites.sort()
-    return sites
+    return _chain.find_stage_spans(sv)
 
 
 def _splice_drop_block(sv: str, block_start: int, block_end: int) -> str:
@@ -222,7 +113,7 @@ def _mutants(sv: str, rng: random.Random) -> Iterator[Mutant]:
     rng.shuffle(order)
     for idx in order:
         block_start, block_end, lhs_name = sites[idx]
-        line, _ = _byte_to_line_col(sv, block_start)
+        line, _ = _chain.byte_to_line_col(sv, block_start)
         yield Mutant(
             sv=_splice_drop_block(sv, block_start, block_end),
             diff_summary=f"line {line}: drop sync stage driving `{lhs_name}`",
@@ -234,7 +125,7 @@ def _mutants(sv: str, rng: random.Random) -> Iterator[Mutant]:
 
 def _candidates(sv: str) -> Iterator[Site]:
     for block_start, _end, lhs_name in _find_sync_stages(sv):
-        line, column = _byte_to_line_col(sv, block_start)
+        line, column = _chain.byte_to_line_col(sv, block_start)
         yield Site(
             kind=MutationKind.SYNC_CHAIN_DEPTH_PERTURB,
             line=line,

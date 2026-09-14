@@ -60,6 +60,7 @@ _FIXTURES: dict[MutationKind, Path] = {
     MutationKind.PORT_BINDING_SWAP: _FIXTURES_DIR / "instances_and_resets.sv",
     MutationKind.RESET_POLARITY_FLIP: _FIXTURES_DIR / "instances_and_resets.sv",
     MutationKind.SYNC_CHAIN_DEPTH_PERTURB: _FIXTURES_DIR / "sync_and_slices.sv",
+    MutationKind.CHAIN_STAGE_INSERT: _FIXTURES_DIR / "sync_chain_readers.sv",
     MutationKind.BIT_EXTRACT_PERMUTE: _FIXTURES_DIR / "sync_and_slices.sv",
 }
 

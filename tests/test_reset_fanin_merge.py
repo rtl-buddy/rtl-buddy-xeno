@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from rtl_buddy_xeno import Mutant, MutationKind, Mutator
+from rtl_buddy_xeno import slang as _slang
 
 pytest.importorskip("rtl_buddy_view")
 if shutil.which("verible-verilog-syntax") is None:
@@ -129,6 +130,79 @@ endmodule
 """
 
 
+# A named-port label (`.local_rst_n(...)`) is *not* a signal this parent
+# declares — merging it in would emit `wire ... = rst_n & local_rst_n;`
+# over an undeclared identifier. With only `rst_n` actually declared the
+# pool holds one name, so there is no pair.
+_INSTANCE_PORT_LABEL = """\
+module port_label_parent (
+    input  logic clk,
+    input  logic rst_n,
+    input  logic d,
+    output logic q
+);
+    child u (.local_rst_n(d), .clk(clk));
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) q <= 1'b0;
+        else        q <= d;
+    end
+endmodule
+"""
+
+# `local_rst_n` is declared internally rather than as a port — still a
+# real, drivable signal of this module, so it belongs in the pool.
+_INTERNAL_RESET = """\
+module internal_reset (
+    input  logic clk,
+    input  logic rst_n,
+    input  logic d,
+    output logic q
+);
+    logic local_rst_n;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) q <= 1'b0;
+        else        q <= d;
+    end
+endmodule
+"""
+
+_ATTRIBUTED_BLOCK = """\
+module attributed (
+    input  logic clk,
+    input  logic global_rst_n,
+    input  logic local_rst_n,
+    input  logic d,
+    output logic q
+);
+    (* keep *)
+    always_ff @(posedge clk or negedge global_rst_n) begin
+        if (!global_rst_n) q <= 1'b0;
+        else               q <= d;
+    end
+endmodule
+"""
+
+# Verilog-2001 spelling: non-ANSI port declarations and a plain
+# `always` reset flop. `_always_blocks` accepts it on purpose.
+_PLAIN_ALWAYS = """\
+module v2001 (clk, rst_n, arst_n, d, q);
+    input  clk;
+    input  rst_n;
+    input  arst_n;
+    input  d;
+    output q;
+    reg    q;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) q <= 1'b0;
+        else        q <= d;
+    end
+endmodule
+"""
+
+
 def _mutants(sv: str) -> list[Mutant]:
     return list(Mutator.from_sv(sv).generate([MutationKind.RESET_FANIN_MERGE], 999))
 
@@ -138,6 +212,15 @@ def _wire_line(mutant: Mutant) -> str:
         ln.strip() for ln in mutant.sv.splitlines() if ln.strip().startswith("wire ")
     ]
     return line
+
+
+def _assert_elaborates(mutant: Mutant) -> None:
+    """Fail if pyslang reports an error-or-worse on the mutant."""
+    if not _slang.is_available():
+        pytest.skip("pyslang not installed; cannot validate elaboration")
+    diagnostics = _slang.elaborate_text(mutant.sv).getAllDiagnostics()
+    bad = [str(d) for d in diagnostics if d.isError()]
+    assert not bad, "mutant failed to elaborate:\n" + "\n".join(bad)
 
 
 # --- site arithmetic ---------------------------------------------------------
@@ -175,6 +258,33 @@ def test_single_reset_fixture_yields_nothing() -> None:
     """``instances_and_resets.sv`` carries one reset name (`rst_n`) per
     module — no pair, so no merge."""
     assert _mutants((_FIXTURES / "instances_and_resets.sv").read_text()) == []
+
+
+def test_instance_port_labels_are_not_reset_sources() -> None:
+    """`.local_rst_n(d)` names the *child's* port, not a signal this
+    parent declares; pooling it would emit a wire over an undeclared
+    identifier. One declared reset is left, so no pair."""
+    assert _mutants(_INSTANCE_PORT_LABEL) == []
+
+
+def test_internally_declared_reset_pairs_with_a_port_reset() -> None:
+    """A `logic local_rst_n;` declared in the body is drivable here, so
+    it pairs with the `rst_n` port."""
+    [mutant] = _mutants(_INTERNAL_RESET)
+    assert _wire_line(mutant) == (
+        "wire rst_n_local_rst_n_xeno_merge_1 = rst_n & local_rst_n;"
+    )
+    _assert_elaborates(mutant)
+
+
+def test_plain_always_reset_flop_is_a_site() -> None:
+    """Verilog-2001 parents write reset flops as `always @(posedge clk or
+    negedge rst_n)`; the operator only needs the reset edge, so plain
+    `always` (and non-ANSI port declarations) count."""
+    [mutant] = _mutants(_PLAIN_ALWAYS)
+    assert _wire_line(mutant) == "wire rst_n_arst_n_xeno_merge_1 = rst_n & arst_n;"
+    assert "negedge rst_n_arst_n_xeno_merge_1)" in mutant.sv
+    _assert_elaborates(mutant)
 
 
 # --- emission ----------------------------------------------------------------
@@ -223,6 +333,22 @@ def test_the_wire_is_declared_immediately_before_the_block() -> None:
     assert leading == following
 
 
+def test_an_attribute_stays_bound_to_the_block() -> None:
+    """`(* keep *)` belongs to the flop, not to the synthesised wire —
+    the `kAlwaysStatement` span starts at `always`, so a naive splice at
+    that offset would land the wire between them and re-bind the
+    attribute."""
+    [mutant] = _mutants(_ATTRIBUTED_BLOCK)
+    lines = mutant.sv.splitlines()
+    wire_idx = next(i for i, ln in enumerate(lines) if ln.strip().startswith("wire "))
+    assert lines[wire_idx + 1].strip() == "(* keep *)"
+    assert lines[wire_idx + 2].lstrip().startswith("always_ff")
+    leading = len(lines[wire_idx]) - len(lines[wire_idx].lstrip())
+    following = len(lines[wire_idx + 1]) - len(lines[wire_idx + 1].lstrip())
+    assert leading == following
+    _assert_elaborates(mutant)
+
+
 def test_modules_never_cross_merge() -> None:
     """`alpha`'s lone reset is never paired with `beta`'s."""
     mutants = _mutants(_TWO_MODULES)
@@ -269,3 +395,18 @@ def test_seed_is_deterministic() -> None:
         Mutator.from_sv(sv).generate([MutationKind.RESET_FANIN_MERGE], 999, seed=7)
     )
     assert [m.diff_summary for m in a] == [m.diff_summary for m in b]
+
+
+def test_seeds_are_unique_per_pair_on_a_shared_block() -> None:
+    """Three resets, two pairs whose first applicable block is the same
+    flop — `block_start` alone would hand both the same seed."""
+    mutants = _mutants(_FIXTURE.read_text())
+    assert len(mutants) == 3
+    assert len({m.seed for m in mutants}) == 3
+
+
+def test_seeds_are_stable_across_runs() -> None:
+    sv = _FIXTURE.read_text()
+    first = {m.diff_summary: m.seed for m in _mutants(sv)}
+    second = {m.diff_summary: m.seed for m in _mutants(sv)}
+    assert first == second

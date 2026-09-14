@@ -499,3 +499,275 @@ def test_chain_stage_insert_copies_port_declared_type() -> None:
     assert "logic [7:0] q_xeno_stage_1;" in mutants[0].sv
     assert "r <= q_xeno_stage_1;" in mutants[0].sv
     assert _elaborates(mutants[0].sv)
+
+
+# --- COMB_BETWEEN_STAGES -----------------------------------------------------
+
+# A stage with *two* non-blocking readers. Only the first (source order)
+# is rewired per mutation, so the stage is still a site in the mutant —
+# which is what makes re-application observable for this operator (the
+# inserted object is a net, never a stage, so a plain chain "uses up"
+# its site after one pass).
+_FANOUT_SV = (
+    "module m (input logic clk, input logic d, output logic q1, output logic q2);\n"
+    "  logic s1, a, b;\n"
+    "  always_ff @(posedge clk) s1 <= d;\n"
+    "  always_ff @(posedge clk) a  <= s1;\n"
+    "  always_ff @(posedge clk) b  <= s1;\n"
+    "  assign q1 = a;\n"
+    "  assign q2 = b;\n"
+    "endmodule\n"
+)
+
+
+def _comb_mutants(sv: str) -> list:
+    return list(Mutator.from_sv(sv).generate([MutationKind.COMB_BETWEEN_STAGES], 999))
+
+
+def test_comb_between_stages_site_count_matches_chain_stage_insert() -> None:
+    """Same 4 sites as ``CHAIN_STAGE_INSERT`` on the shared fixture.
+
+    Both operators need "a stage with a copyable declared type and a
+    same-clock, same-module, direct non-blocking reader", so
+    ``sync_meta``, ``sync_q``, ``flag_meta`` and ``sg_meta`` qualify
+    while ``sync_out`` and ``sg_q`` (read only by a continuous
+    ``assign``) and ``lone_q`` (read by nothing) don't.
+    ``CHAIN_STAGE_INSERT`` filters on ``clock_edge_text`` on top of
+    that, but a stage without recoverable clock text can have no reader
+    either, so the two site sets coincide by construction.
+    """
+    mutants = _comb_mutants(_insert_sv())
+    assert len(mutants) == 4 == len(_insert_mutants(_insert_sv()))
+    summaries = " ".join(m.diff_summary for m in mutants)
+    for name in ("sync_meta", "sync_q", "flag_meta", "sg_meta"):
+        assert f"between `{name}`" in summaries
+    for name in ("sync_out", "lone_q", "sg_q"):
+        assert f"between `{name}`" not in summaries
+
+
+def test_comb_between_stages_adds_a_wire_not_a_flop() -> None:
+    """Chain depth is untouched: same ``always_ff`` count, one more ``wire``."""
+    sv = _insert_sv()
+    for mutant in _comb_mutants(sv):
+        assert mutant.sv.count("always_ff") == sv.count("always_ff")
+        assert mutant.sv.count("wire") == sv.count("wire") + 1
+
+
+def test_comb_between_stages_rewires_reader_through_the_inverter() -> None:
+    """The reader consumes the comb net; the stage still drives its own Q."""
+    [mutant] = [
+        m
+        for m in _comb_mutants(_insert_sv())
+        if "between `sync_meta`" in m.diff_summary
+    ]
+    assert "wire [7:0] sync_meta_xeno_comb_1 = ~sync_meta;" in mutant.sv
+    assert "sync_q    <= sync_meta_xeno_comb_1;" in mutant.sv
+    assert "sync_meta <= src_q;" in mutant.sv
+
+
+def test_comb_between_stages_two_deep_chain_yields_one_site() -> None:
+    """Only the stage with a flop reader is a site — the tail isn't."""
+    mutants = _comb_mutants(_TWO_DEEP_SV)
+    assert len(mutants) == 1
+    assert "between `s1`" in mutants[0].diff_summary
+    assert "wire s1_xeno_comb_1 = ~s1;" in mutants[0].sv
+
+
+def test_comb_between_stages_lone_flop_yields_no_site() -> None:
+    """A single flop nothing reads — there is no flop-to-flop wire to cut."""
+    sv = (
+        "module m (input logic clk, input logic d, output logic q);\n"
+        "  always_ff @(posedge clk) q <= d;\n"
+        "endmodule\n"
+    )
+    assert _comb_mutants(sv) == []
+
+
+def test_comb_between_stages_assign_only_reader_yields_no_site() -> None:
+    """A continuous ``assign`` is not a reader: CDC-014's precondition is
+    comb logic between two *sequential* elements."""
+    sv = (
+        "module m (input logic clk, input logic d, output logic q);\n"
+        "  logic s1;\n"
+        "  always_ff @(posedge clk) s1 <= d;\n"
+        "  assign q = s1;\n"
+        "endmodule\n"
+    )
+    assert _comb_mutants(sv) == []
+
+
+def test_comb_between_stages_reader_before_stage() -> None:
+    """The reader may sit textually *before* the stage — the two byte
+    splices are applied highest-offset-first either way."""
+    sv = (
+        "module m (input logic clk, input logic d, output logic q);\n"
+        "  logic s1, s2;\n"
+        "  always_ff @(posedge clk) s2 <= s1;\n"
+        "  always_ff @(posedge clk) s1 <= d;\n"
+        "  assign q = s2;\n"
+        "endmodule\n"
+    )
+    mutants = _comb_mutants(sv)
+    assert len(mutants) == 1
+    mutant = mutants[0]
+    assert "s2 <= s1_xeno_comb_1;" in mutant.sv
+    assert "wire s1_xeno_comb_1 = ~s1;" in mutant.sv
+    assert "s1 <= d;" in mutant.sv
+
+
+def test_comb_between_stages_reapplication_numbers_the_suffix() -> None:
+    """Applying the operator to its own output yields ``_xeno_comb_2``.
+
+    Needs a fan-out stage (two flop readers): the first pass rewires one
+    reader, leaving the stage a site for the second pass, which then has
+    to dodge the name the first pass already took.
+    """
+    [first] = _comb_mutants(_FANOUT_SV)
+    assert "s1_xeno_comb_1" in first.sv
+    second_round = _comb_mutants(first.sv)
+    assert second_round
+    for mutant in second_round:
+        assert "s1_xeno_comb_2" in mutant.diff_summary
+        assert "s1_xeno_comb_1_xeno_comb" not in mutant.sv
+
+
+def test_comb_between_stages_prediction_conservative() -> None:
+    """CDC-014 is named in the rationale only: the Yosys-side rule also
+    wants the two stages on the same data path, which the CST view can't
+    confirm. Both the stage's Q and the new net are perturbed."""
+    [first, *_] = Mutator.from_sv(_insert_sv()).generate(
+        [MutationKind.COMB_BETWEEN_STAGES], count=1
+    )
+    assert first.prediction.cdc_rules_added == frozenset()
+    assert first.prediction.cdc_rules_removed == frozenset()
+    assert "CDC-014" in first.prediction.rationale
+    assert first.prediction.perturbs_liveness is False
+    new_name = first.diff_summary.split("inverter `", 1)[1].split("`", 1)[0]
+    lhs = first.diff_summary.split("between `", 1)[1].split("`", 1)[0]
+    assert first.prediction.perturbs_signals == frozenset({lhs, new_name})
+
+
+def test_comb_between_stages_candidates_match_generate() -> None:
+    """``candidates()`` enumerates exactly the sites ``generate()`` mutates."""
+    sv = _insert_sv()
+    sites = list(Mutator.from_sv(sv).candidates([MutationKind.COMB_BETWEEN_STAGES]))
+    assert len(sites) == len(_comb_mutants(sv))
+    # candidates() is source order; generate() shuffles.
+    assert [s.line for s in sites] == sorted(s.line for s in sites)
+
+
+# --- COMB_BETWEEN_STAGES: reader-matching and declared-type guardrails --------
+
+
+def test_comb_between_stages_never_crosses_module_scope() -> None:
+    """One site per module, each rewiring only its own module's reader."""
+    mutants = _comb_mutants(_CROSS_MODULE_SV)
+    assert len(mutants) == 2
+    assert all("between `dup`" in m.diff_summary for m in mutants)
+    for mutant in mutants:
+        head, sep, tail = mutant.sv.partition("module top_b")
+        assert sep
+        touched = [part for part in (head, tail) if "dup_xeno_comb_1" in part]
+        # The net declaration and the rewired reader — both inside one
+        # module, neither in the other.
+        assert len(touched) == 1
+        assert touched[0].count("dup_xeno_comb_1") == 2
+        untouched = head if touched[0] is tail else tail
+        assert "dup_q <= dup;" in untouched
+    assert [m.diff_summary for m in mutants if not _elaborates(m.sv)] == []
+
+
+def test_comb_between_stages_skips_different_clock_reader() -> None:
+    """A consumer on another clock is a crossing, not a chain edge."""
+    sv = (
+        "module m (input logic clk_a, input logic clk_b, input logic d,\n"
+        "          output logic q);\n"
+        "  logic s1, s2;\n"
+        "  always_ff @(posedge clk_a) s1 <= d;\n"
+        "  always_ff @(posedge clk_b) s2 <= s1;\n"
+        "  assign q = s2;\n"
+        "endmodule\n"
+    )
+    assert _comb_mutants(sv) == []
+
+
+def test_comb_between_stages_skips_expression_reader() -> None:
+    """``q2 <= q1 & en`` already has comb logic in the path — CDC-014's
+    precondition is met without the operator, so it is not a site."""
+    sv = (
+        "module m (input logic clk, input logic d, input logic en,\n"
+        "          output logic q);\n"
+        "  logic q1, q2;\n"
+        "  always_ff @(posedge clk) q1 <= d;\n"
+        "  always_ff @(posedge clk) q2 <= q1 & en;\n"
+        "  assign q = q2;\n"
+        "endmodule\n"
+    )
+    assert _comb_mutants(sv) == []
+
+
+def test_comb_between_stages_skips_repeated_reference_reader() -> None:
+    """``q2 <= q1 & q1`` is not a direct flop-to-flop edge either."""
+    sv = (
+        "module m (input logic clk, input logic d, output logic q);\n"
+        "  logic q1, q2;\n"
+        "  always_ff @(posedge clk) q1 <= d;\n"
+        "  always_ff @(posedge clk) q2 <= q1 & q1;\n"
+        "  assign q = q2;\n"
+        "endmodule\n"
+    )
+    assert _comb_mutants(sv) == []
+
+
+def test_comb_between_stages_skips_enum_typed_stage() -> None:
+    """The net is built from the stage's declared type, and a typedef'd
+    enum is not one this operator will copy — so it is not a site."""
+    sv = (
+        "typedef enum logic [1:0] {S_IDLE, S_RUN, S_DONE} state_t;\n"
+        "module m (input logic clk, input state_t d, output state_t q);\n"
+        "  state_t s1;\n"
+        "  always_ff @(posedge clk) s1 <= d;\n"
+        "  always_ff @(posedge clk) q  <= s1;\n"
+        "endmodule\n"
+    )
+    assert _comb_mutants(sv) == []
+
+
+def test_comb_between_stages_copies_signedness() -> None:
+    """A ``logic signed [3:0]`` stage yields a ``wire signed [3:0]`` net —
+    the ``$bits`` spelling would have dropped the sign and the inverted
+    value would have been re-read as unsigned."""
+    [mutant] = [
+        m for m in _comb_mutants(_insert_sv()) if "between `sg_meta`" in m.diff_summary
+    ]
+    assert "wire signed [3:0] sg_meta_xeno_comb_1 = ~sg_meta;" in mutant.sv
+    assert "sg_q    <= sg_meta_xeno_comb_1;" in mutant.sv
+    assert "sg_meta <= sg_src;" in mutant.sv
+
+
+def test_comb_between_stages_scalar_stage_yields_a_bare_wire() -> None:
+    """A 1-bit stage gets an undimensioned ``wire``, not ``wire [0:0]``."""
+    [mutant] = [
+        m
+        for m in _comb_mutants(_insert_sv())
+        if "between `flag_meta`" in m.diff_summary
+    ]
+    assert "wire flag_meta_xeno_comb_1 = ~flag_meta;" in mutant.sv
+    assert "flag_out <= flag_meta_xeno_comb_1;" in mutant.sv
+
+
+def test_comb_between_stages_copies_port_declared_type() -> None:
+    """The stage's Q may be declared by an ``output`` port; the port's
+    data type feeds the net just the same."""
+    sv = (
+        "module m (input logic clk, input logic [7:0] d,\n"
+        "          output logic [7:0] q, output logic [7:0] r);\n"
+        "  always_ff @(posedge clk) q <= d;\n"
+        "  always_ff @(posedge clk) r <= q;\n"
+        "endmodule\n"
+    )
+    mutants = _comb_mutants(sv)
+    assert len(mutants) == 1
+    assert "wire [7:0] q_xeno_comb_1 = ~q;" in mutants[0].sv
+    assert "r <= q_xeno_comb_1;" in mutants[0].sv
+    assert _elaborates(mutants[0].sv)

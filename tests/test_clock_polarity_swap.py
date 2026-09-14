@@ -253,11 +253,11 @@ def test_prediction_requires_non_empty_rationale() -> None:
         Prediction(rationale="")
 
 
-def test_full_enum_has_thirteen_kinds() -> None:
+def test_full_enum_has_fourteen_kinds() -> None:
     """Sanity-check the operator enumeration: the 11 kinds ratified in
-    #3 plus ``CHAIN_STAGE_INSERT`` (xeno#13) and ``COMB_BETWEEN_STAGES``
-    (xeno#14)."""
-    assert len(list(MutationKind)) == 13
+    #3 plus ``CHAIN_STAGE_INSERT`` (xeno#13), ``COMB_BETWEEN_STAGES``
+    (xeno#14) and ``RESET_FANIN_MERGE`` (xeno#15)."""
+    assert len(list(MutationKind)) == 14
     expected = {
         # CDC
         "CLOCK_POLARITY_SWAP",
@@ -267,6 +267,7 @@ def test_full_enum_has_thirteen_kinds() -> None:
         "BIT_EXTRACT_PERMUTE",
         "ATTRIBUTE_TOGGLE",
         "RESET_POLARITY_FLIP",
+        "RESET_FANIN_MERGE",
         # rb-mut
         "ARITH_FLIP",
         "BIT_OP_FLIP",

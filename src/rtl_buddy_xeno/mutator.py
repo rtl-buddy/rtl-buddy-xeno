@@ -3,9 +3,10 @@
 Public surface ratified in #3 (API design) and #4 (parser layering).
 This module owns:
 
-- :class:`MutationKind` — the operator enum (13 kinds; #3 split rb-mut's
+- :class:`MutationKind` — the operator enum (14 kinds; #3 split rb-mut's
   ``cond`` into ``COND_NEGATE`` + ``COND_CONST``, #13 added
-  ``CHAIN_STAGE_INSERT`` and #14 ``COMB_BETWEEN_STAGES``).
+  ``CHAIN_STAGE_INSERT``, #14 ``COMB_BETWEEN_STAGES`` and #15
+  ``RESET_FANIN_MERGE``).
 - :class:`Prediction` — flat-shape oracle prediction. CDC fields
   (``cdc_rules_added`` / ``cdc_rules_removed``) and FPV fields
   (``perturbs_signals`` / ``perturbs_liveness``) co-exist on one type
@@ -39,7 +40,7 @@ from pathlib import Path
 class MutationKind(StrEnum):
     """Mutation operators across both consumer pools.
 
-    First seven are cdc#221 Layer B's structural-CDC operators; remainder
+    First eight are cdc#221 Layer B's structural-CDC operators; remainder
     are rtl_buddy#206's semantic operators. See umbrella #2 for the
     full table including parser-layer assignments and MCY-expressibility.
     """
@@ -52,6 +53,7 @@ class MutationKind(StrEnum):
     BIT_EXTRACT_PERMUTE = "bit_extract_permute"
     ATTRIBUTE_TOGGLE = "attribute_toggle"
     RESET_POLARITY_FLIP = "reset_polarity_flip"
+    RESET_FANIN_MERGE = "reset_fanin_merge"
     # FPV / semantic — rtl_buddy#206
     ARITH_FLIP = "arith_flip"
     BIT_OP_FLIP = "bit_op_flip"

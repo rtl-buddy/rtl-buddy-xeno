@@ -46,6 +46,16 @@ from rtl_buddy_xeno.operators import IMPLEMENTED_KINDS
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
+# The operators that run on a bare install. Per the README's parser-layer
+# column these two are `regex (no extras)`; every other implemented
+# operator reaches Verible through `cst.py`, which imports the viewer
+# (`rtl-buddy-sch`). Membership here is what decides whether a test needs
+# `importorskip("rtl_buddy_view")` — an explicit skip list of viewer-needing
+# kinds goes stale silently every time an operator lands.
+_NO_EXTRAS_KINDS = frozenset(
+    {MutationKind.CLOCK_POLARITY_SWAP, MutationKind.ATTRIBUTE_TOGGLE}
+)
+
 # Fixture per implemented operator. When a new operator lands, its PR
 # adds an entry here pointing at a fixture file that exercises ≥3
 # candidate sites for that operator.
@@ -62,6 +72,7 @@ _FIXTURES: dict[MutationKind, Path] = {
     MutationKind.SYNC_CHAIN_DEPTH_PERTURB: _FIXTURES_DIR / "sync_and_slices.sv",
     MutationKind.CHAIN_STAGE_INSERT: _FIXTURES_DIR / "sync_chain_readers.sv",
     MutationKind.COMB_BETWEEN_STAGES: _FIXTURES_DIR / "sync_chain_readers.sv",
+    MutationKind.RESET_FANIN_MERGE: _FIXTURES_DIR / "reset_fanin.sv",
     MutationKind.BIT_EXTRACT_PERMUTE: _FIXTURES_DIR / "sync_and_slices.sv",
 }
 
@@ -148,11 +159,11 @@ def test_every_mutant_elaborates_with_pyslang(
     """
     if kind not in _FIXTURES:
         pytest.skip(f"no fixture registered for {kind.value}")
-    if kind in {MutationKind.ATTRIBUTE_TOGGLE, MutationKind.ASSIGN_DROP}:
-        # These operators need the viewer (`rtl-buddy-sch`) for cst.py.
-        # ATTRIBUTE_TOGGLE uses cst.py for its scanner today via the
-        # facade import chain; ASSIGN_DROP uses Verible directly.
-        # Skip if the extra is missing — pyslang alone isn't enough.
+    if kind not in _NO_EXTRAS_KINDS:
+        # Every Verible-layer operator reaches the CST through `cst.py`,
+        # which imports the viewer (`rtl-buddy-sch`). pyslang alone isn't
+        # enough to *generate* those mutants, so skip unless the extra is
+        # installed.
         pytest.importorskip("rtl_buddy_view")
 
     fixture = _FIXTURES[kind]

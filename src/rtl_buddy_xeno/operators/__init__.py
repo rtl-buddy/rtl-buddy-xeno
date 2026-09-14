@@ -34,6 +34,7 @@ from rtl_buddy_xeno.operators import (
     _cond_const,
     _cond_negate,
     _port_binding_swap,
+    _reset_fanin_merge,
     _reset_polarity_flip,
     _sync_chain_depth_perturb,
 )
@@ -51,6 +52,7 @@ OPERATORS: dict[MutationKind, OperatorFn] = {
     MutationKind.COMB_BETWEEN_STAGES: _comb_between_stages.operator,
     MutationKind.BIT_EXTRACT_PERMUTE: _bit_extract_permute.operator,
     MutationKind.RESET_POLARITY_FLIP: _reset_polarity_flip.operator,
+    MutationKind.RESET_FANIN_MERGE: _reset_fanin_merge.operator,
     # rb-mut operators
     MutationKind.ASSIGN_DROP: _assign_drop.operator,
     MutationKind.ARITH_FLIP: _arith_flip.operator,
@@ -70,6 +72,7 @@ CANDIDATES: dict[MutationKind, CandidatesFn] = {
     MutationKind.COMB_BETWEEN_STAGES: _comb_between_stages.candidates,
     MutationKind.BIT_EXTRACT_PERMUTE: _bit_extract_permute.candidates,
     MutationKind.RESET_POLARITY_FLIP: _reset_polarity_flip.candidates,
+    MutationKind.RESET_FANIN_MERGE: _reset_fanin_merge.candidates,
     # rb-mut operators
     MutationKind.ASSIGN_DROP: _assign_drop.candidates,
     MutationKind.ARITH_FLIP: _arith_flip.candidates,

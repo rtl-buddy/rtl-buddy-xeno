@@ -38,6 +38,7 @@ import re
 from collections.abc import Iterator
 
 from rtl_buddy_xeno.mutator import MutationKind, Mutant, Prediction, Site
+from rtl_buddy_xeno.operators._reset_names import is_reset_name
 
 _POLARITY_TOKEN = re.compile(r"\b(posedge|negedge)\b")
 
@@ -46,19 +47,12 @@ _POLARITY_TOKEN = re.compile(r"\b(posedge|negedge)\b")
 # in malformed SV that wouldn't compile.
 _FOLLOWING_IDENT = re.compile(r"\s+([A-Za-z_][A-Za-z0-9_]*)")
 
-# Active-low / active-high reset name patterns the heuristic matches
-# against the trailing identifier (case-insensitive). The patterns
-# cover the canonical idioms used in rtl-buddy-cdc's fuzz corpus
-# templates and the wider conventions documented in rtl-buddy-cdc's
-# reset-domain helper. The list intentionally stops short of
-# vendor-specific names (every chip family has its own ``por_n`` /
-# ``hreset`` etc.) — the operator accepts skipping a few real
-# clocks named that way rather than enumerating the whole namespace.
-_RESET_NAME_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^(arst|reset|rst)(_?n)?$", re.IGNORECASE),
-    re.compile(r"^(raw_rst|raw_reset|global_rst|local_rst)(_?n)?$", re.IGNORECASE),
-    re.compile(r"^(porst|presetn|hreset|nreset)$", re.IGNORECASE),
-)
+# Active-low / active-high reset name patterns now live in the
+# parser-free :mod:`._reset_names` sibling — ``RESET_FANIN_MERGE``
+# (xeno#15) reads the same table, and one table means the two
+# operators can never disagree about what a reset is called. The
+# sibling imports nothing but ``re``, so this operator stays
+# parser-free (see the no-straddle rule in the package docstring).
 
 
 def _is_reset_edge(sv: str, end_of_token: int) -> bool:
@@ -74,8 +68,7 @@ def _is_reset_edge(sv: str, end_of_token: int) -> bool:
     tail = _FOLLOWING_IDENT.match(sv, end_of_token)
     if tail is None:
         return False
-    name = tail.group(1)
-    return any(p.match(name) for p in _RESET_NAME_PATTERNS)
+    return is_reset_name(tail.group(1))
 
 
 def _clock_signal_name(sv: str, end_of_token: int) -> str | None:

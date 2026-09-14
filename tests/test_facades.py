@@ -15,7 +15,10 @@ than uninstalling packages in-process.
 
 from __future__ import annotations
 
+import json
+import shutil
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -252,3 +255,145 @@ def test_node_span_handles_inner_node() -> None:
 def test_node_span_uses_node_own_span_when_present() -> None:
     tree = {"tag": "leaf", "start": 100, "end": 110, "text": "abc"}
     assert cst.node_span(tree) == (100, 110)
+
+
+# --- cst.py cache-shape contract (#27) --------------------------------------
+#
+# xeno's compute callback writes into the *viewer's* user-global,
+# content-hashed CST cache. Storing Verible's path-keyed envelope there
+# instead of the bare tree poisons that cache for the viewer, which then
+# registers zero modules ("Known modules: []") until the file content
+# changes. See #27 and rtl-buddy/rtl-buddy-sch#186.
+
+
+def test_parse_unwraps_legacy_envelope_from_a_poisoned_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cache entry written by an older xeno still parses.
+
+    Pure-Python: both viewer modules are stubbed, so no extras needed.
+    """
+    inner = {"tag": "kRoot", "children": []}
+    legacy_entry = {"x.sv": {"tree": inner}}
+
+    monkeypatch.setattr(
+        cst, "_import_view_cst", lambda: _StubCstCache(legacy_entry), raising=True
+    )
+    monkeypatch.setattr(cst, "_import_view_verible", _StubVerible, raising=True)
+
+    assert cst.parse(Path("x.sv")) == inner
+
+
+def test_parse_passes_a_bare_tree_through_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The canonical (post-#27) cache shape is returned as-is."""
+    bare = {"tag": "kRoot", "children": [{"tag": "kModuleDeclaration"}]}
+    monkeypatch.setattr(
+        cst, "_import_view_cst", lambda: _StubCstCache(bare), raising=True
+    )
+    monkeypatch.setattr(cst, "_import_view_verible", _StubVerible, raising=True)
+
+    assert cst.parse(Path("x.sv")) == bare
+
+
+class _StubCstCache:
+    """Stands in for ``rtl_buddy_view.cst_cache``; serves a canned entry."""
+
+    def __init__(self, entry: dict) -> None:
+        self._entry = entry
+
+    def get_or_compute(self, sv_path: object, **kwargs: object) -> dict:
+        return self._entry
+
+
+class _StubVerible:
+    """Stands in for ``rtl_buddy_view.frontend.verible``."""
+
+    @staticmethod
+    def locate_binary() -> Path:
+        return Path("/nonexistent/verible-verilog-syntax")
+
+
+# --- cst.py cache-shape contract, end-to-end (needs verible + the viewer) ---
+
+_SV_SOURCE = "module xeno_cache_shape (input logic clk);\nendmodule\n"
+
+
+@pytest.mark.skipif(
+    shutil.which("verible-verilog-syntax") is None,
+    reason="verible-verilog-syntax not on PATH",
+)
+def test_run_verible_subprocess_returns_bare_tree(tmp_path: Path) -> None:
+    """The compute callback unwraps the envelope *before* the cache write."""
+    pytest.importorskip("rtl_buddy_view")
+
+    sv_path = tmp_path / "shape.sv"
+    sv_path.write_text(_SV_SOURCE)
+
+    binary = shutil.which("verible-verilog-syntax")
+    assert binary is not None
+    tree = cst._run_verible_subprocess(Path(binary), sv_path)
+
+    assert "tag" in tree
+    assert "children" in tree
+    for key in tree:
+        assert key != sv_path.name
+        assert not str(key).endswith(sv_path.name)
+
+
+@pytest.mark.skipif(
+    shutil.which("verible-verilog-syntax") is None,
+    reason="verible-verilog-syntax not on PATH",
+)
+def test_parse_persists_bare_tree_in_shared_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What xeno writes to the shared cache is what the viewer would write."""
+    pytest.importorskip("rtl_buddy_view")
+    from rtl_buddy_view import cst_cache as view_cst_cache
+    from rtl_buddy_view.frontend import verible as view_verible
+
+    # The cache is the whole point of this test; a `RTL_BUDDY_NO_CACHE=1`
+    # in the ambient environment would skip every write.
+    monkeypatch.delenv("RTL_BUDDY_NO_CACHE", raising=False)
+    monkeypatch.delenv("RTL_BUDDY_VIEW_NO_CACHE", raising=False)
+
+    sv_path = tmp_path / "shape.sv"
+    sv_path.write_text(_SV_SOURCE)
+    cache_dir = tmp_path / "cache"
+
+    tree = cst.parse(sv_path, cache_dir=cache_dir)
+
+    # 1. Exactly one entry, and on disk it is the bare tree.
+    entries = sorted(cache_dir.rglob("*.json"))
+    assert entries, f"no cache entry written under {cache_dir}"
+    for entry in entries:
+        stored = json.loads(entry.read_text())
+        assert isinstance(stored, dict)
+        assert "tag" in stored, f"{entry} holds the path-keyed envelope, not the tree"
+        for key in stored:
+            assert not str(key).endswith(sv_path.name)
+
+    # 2. The viewer reading the same cache with its own compute callback
+    #    hits xeno's entry and gets what it would have computed itself.
+    via_viewer = view_cst_cache.get_or_compute(
+        sv_path,
+        verible_binary=view_verible.locate_binary(),
+        compute=view_verible._run_verible,
+        cache_dir=cache_dir,
+    )
+    assert via_viewer == tree
+
+    # 3. And the viewer's own module walker finds the module in it — the
+    #    regression #27 reported was "Known modules: []".
+    from rtl_buddy_view.offsets import OffsetIndex
+
+    text = sv_path.read_text()
+    modules = view_verible._walk_modules(
+        via_viewer,
+        file=str(sv_path),
+        offsets=OffsetIndex.build(text),
+        source=text.encode("utf-8"),
+    )
+    assert [m.name for m in modules] == ["xeno_cache_shape"]

@@ -24,12 +24,20 @@ shape ``SYNC_CHAIN_DEPTH_PERTURB`` shipped with):
    ``LHS <= RHS;`` (no ``if``, ``case``, loops, blocking assignments).
 3. The LHS is a bare identifier (not a bit-select, not a hierarchical
    reference).
+
+A recognised stage additionally carries the two facts the *insertion*
+operators need and the deletion operator does not: the
+``kModuleDeclaration`` it lives in (:func:`find_downstream_reader`
+never leaves that subtree) and, when it can be recovered, the stage
+LHS's declared data type (:func:`declared_type`).
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import secrets
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +49,7 @@ __all__ = [
     "ReaderRef",
     "SyncStage",
     "byte_to_line_col",
+    "declared_type",
     "find_downstream_reader",
     "find_stage_spans",
     "find_sync_stages",
@@ -63,13 +72,29 @@ def sv_to_tempfile(sv: str) -> Path:
     The CST facade parses files, not strings, and view's cache keys on
     content — so the same source text always lands on the same path and
     re-parses are cache hits.
+
+    The publish is atomic: the bytes go to a unique sibling name (pid +
+    random suffix) and are then :func:`os.replace`'d onto the target.
+    Writing the shared, content-derived path in place would let a
+    concurrent reader — another thread or process mutating the same
+    source — open a half-written file, and Verible would report a
+    syntax error on source that is perfectly valid.
     """
     digest = hashlib.sha256(sv.encode("utf-8")).hexdigest()[:16]
     tmpdir = Path(tempfile.gettempdir()) / "rtl-buddy-xeno"
     tmpdir.mkdir(parents=True, exist_ok=True)
     target = tmpdir / f"sv-{digest}.sv"
-    if not target.exists() or target.read_text() != sv:
-        target.write_text(sv)
+    try:
+        if target.read_text(encoding="utf-8") == sv:
+            return target
+    except OSError:
+        pass
+    staging = tmpdir / f".sv-{digest}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    try:
+        staging.write_text(sv, encoding="utf-8")
+        os.replace(staging, target)
+    finally:
+        staging.unlink(missing_ok=True)
     return target
 
 
@@ -146,21 +171,40 @@ def fresh_identifier(sv: str, base: str, infix: str) -> str:
 # --- CST shape recognisers ---------------------------------------------------
 
 
-def first_identifier(node: Any) -> str | None:
-    """Return the text of the first ``SymbolIdentifier`` leaf under ``node``."""
+def _direct_children(node: dict) -> list[dict]:
+    """Immediate ``dict`` children of ``node`` (Verible pads with nulls)."""
+    return [c for c in (node.get("children", []) or []) if isinstance(c, dict)]
+
+
+def _first_direct(node: dict, tag: str) -> dict | None:
+    """First immediate child of ``node`` tagged ``tag``, or ``None``."""
+    for child in _direct_children(node):
+        if child.get("tag") == tag:
+            return child
+    return None
+
+
+def _first_identifier_leaf(node: Any) -> dict | None:
+    """Return the first ``SymbolIdentifier`` leaf node under ``node``."""
     if isinstance(node, dict):
         if node.get("tag") == "SymbolIdentifier" and node.get("text"):
-            return str(node["text"])
+            return node
         for child in node.get("children", []) or []:
-            name = first_identifier(child)
-            if name:
-                return name
+            leaf = _first_identifier_leaf(child)
+            if leaf is not None:
+                return leaf
     elif isinstance(node, list):
         for child in node:
-            name = first_identifier(child)
-            if name:
-                return name
+            leaf = _first_identifier_leaf(child)
+            if leaf is not None:
+                return leaf
     return None
+
+
+def first_identifier(node: Any) -> str | None:
+    """Return the text of the first ``SymbolIdentifier`` leaf under ``node``."""
+    leaf = _first_identifier_leaf(node)
+    return str(leaf["text"]) if leaf is not None else None
 
 
 def is_single_clock_sensitivity(always_ff_node: dict) -> bool:
@@ -226,6 +270,20 @@ def _leads_with_edge(event_expression: dict) -> bool:
     return bool(children) and children[0].get("tag") in ("posedge", "negedge")
 
 
+def _node_text(sv: str, node: dict) -> str | None:
+    """Source text under ``node``, or ``None`` when it has no byte span."""
+    try:
+        start, end = _cst.node_span(node)
+    except ValueError:
+        return None
+    return sv.encode("utf-8")[start:end].decode("utf-8")
+
+
+def _normalise(text: str) -> str:
+    """Collapse every run of whitespace to one space and strip the ends."""
+    return " ".join(text.split())
+
+
 def _clock_edge_text(sv: str, always_ff_node: dict) -> str:
     """Literal sensitivity text of the stage's clock, e.g. ``posedge clk``.
 
@@ -234,18 +292,167 @@ def _clock_edge_text(sv: str, always_ff_node: dict) -> str:
     survives into a synthesised sibling flop. Returns ``""`` when the
     event expression can't be pinned down unambiguously — callers that
     need to *emit* a clock (as opposed to merely deleting a block) must
-    treat an empty string as "skip this stage".
+    treat an empty string as "skip this stage", and
+    :func:`find_downstream_reader` never finds a reader for such a
+    stage (it has no clock to match the reader's against).
     """
     evs = _cst.walk_subtrees(always_ff_node, "kEventExpression")
     edged = [ev for ev in evs if _leads_with_edge(ev)]
     chosen = edged[0] if len(edged) == 1 else (evs[0] if len(evs) == 1 else None)
     if chosen is None:
         return ""
-    try:
-        start, end = _cst.node_span(chosen)
-    except ValueError:
-        return ""
-    return sv.encode("utf-8")[start:end].decode("utf-8").strip()
+    text = _node_text(sv, chosen)
+    return text.strip() if text is not None else ""
+
+
+# --- declared-type lookup ----------------------------------------------------
+
+# The data types an insertion operator is willing to copy onto a
+# synthesised object: a packed 4-state/2-state vector or scalar, with an
+# optional signedness keyword. Everything else — typedef names (enums,
+# structs, unions), `int`/`integer`/`byte`, implicit types — is returned
+# as None, because a synthesised sibling declared with a *copy* of the
+# text is only equivalent to the original for these forms.
+_COPYABLE_TYPE_RE = re.compile(
+    r"^(logic|reg|bit|wire)(\s+(signed|unsigned))?(\s*\[[^\]]+\])*$"
+)
+
+# Declaration shapes searched for the stage LHS, in the order Verible
+# spells them (probed with `verible-verilog-syntax --export_json
+# --printtree`):
+#
+#   kDataDeclaration  logic [7:0] a, b;
+#     kInstantiationBase > kInstantiationType > kDataType
+#     kInstantiationBase > kGateInstanceRegisterVariableList
+#                        > kRegisterVariable(SymbolIdentifier,
+#                                            kUnpackedDimensions)
+#   kNetDeclaration   wire [2:0] na, nb;   /  wire nc = clk;
+#     kDataType (the `wire` keyword alone — the packed dimensions hang
+#     off a sibling kDataTypeImplicitIdDimensions)
+#     kNetVariableDeclarationAssign > kNetVariable | kNetDeclarationAssignment
+#   kPortDeclaration  output logic [7:0] q
+#     kDataType, kUnqualifiedId(SymbolIdentifier), kUnpackedDimensions
+#
+# Because the packed dimensions do not always sit inside the kDataType
+# node (see kNetDeclaration), the type text is taken as the source
+# between the start of the kDataType and the start of the *first*
+# declarator name — which is also what makes `logic [7:0] a, b;` work
+# for either declarator.
+_DECLARATION_TAGS = ("kDataDeclaration", "kNetDeclaration", "kPortDeclaration")
+
+_DECLARATOR_TAGS = (
+    "kRegisterVariable",
+    "kNetVariable",
+    "kNetDeclarationAssignment",
+    "kUnqualifiedId",
+)
+
+
+def _declaration_parts(declaration: dict) -> tuple[dict, list[dict]] | None:
+    """``(kDataType node, declarator nodes)`` of one declaration, or ``None``.
+
+    Only immediate children are consulted at each level, so the
+    ``kUnqualifiedId`` a *user-defined type name* hides inside a
+    ``kDataType`` (``input state_t d``) is never mistaken for the
+    declarator.
+    """
+    tag = declaration.get("tag")
+    if tag == "kDataDeclaration":
+        base = _first_direct(declaration, "kInstantiationBase")
+        if base is None:
+            return None
+        inst_type = _first_direct(base, "kInstantiationType")
+        data_type = _first_direct(inst_type, "kDataType") if inst_type else None
+        var_list = _first_direct(base, "kGateInstanceRegisterVariableList")
+        declarators = (
+            [c for c in _direct_children(var_list) if c.get("tag") in _DECLARATOR_TAGS]
+            if var_list
+            else []
+        )
+    elif tag == "kNetDeclaration":
+        data_type = _first_direct(declaration, "kDataType")
+        var_list = _first_direct(declaration, "kNetVariableDeclarationAssign")
+        declarators = (
+            [c for c in _direct_children(var_list) if c.get("tag") in _DECLARATOR_TAGS]
+            if var_list
+            else []
+        )
+    elif tag == "kPortDeclaration":
+        data_type = _first_direct(declaration, "kDataType")
+        ident = _first_direct(declaration, "kUnqualifiedId")
+        declarators = [ident] if ident is not None else []
+    else:
+        return None
+    if data_type is None or not declarators:
+        return None
+    return data_type, declarators
+
+
+def _has_unpacked_dimensions(declaration: dict, declarator: dict) -> bool:
+    """True iff ``declarator`` carries unpacked (array) dimensions.
+
+    A port spells its unpacked dimensions as a *sibling* of the
+    identifier rather than inside it, so the whole declaration is
+    consulted for that shape — safe, because a ``kPortDeclaration``
+    declares exactly one name.
+    """
+    scope = declaration if declaration.get("tag") == "kPortDeclaration" else declarator
+    for dims in _cst.walk_subtrees(scope, "kUnpackedDimensions"):
+        if _cst.walk_subtrees(dims, "kDeclarationDimensions"):
+            return True
+    return False
+
+
+def declared_type(sv: str, module_node: dict, name: str) -> str | None:
+    """Whitespace-normalised declared data type of ``name`` in ``module_node``.
+
+    Returns e.g. ``"logic [7:0]"``, ``"logic signed [3:0]"``,
+    ``"logic"`` — and ``None`` whenever the declaration cannot be
+    copied verbatim onto a synthesised sibling object:
+
+    - the name is not declared in this module (a port of an enclosing
+      scope, a package import, a hierarchical name);
+    - the type is a typedef name (``state_t``, an enum / struct /
+      union), an integer-atom type (``int``, ``integer``, ``byte``) or
+      anything else outside :data:`_COPYABLE_TYPE_RE`;
+    - the declarator carries unpacked dimensions (``logic [3:0] arr
+      [0:1]``), where copying only the packed half would silently
+      change the object's shape.
+
+    This exists because ``logic [$bits(<lhs>)-1:0] <new>;`` — the
+    obvious width-preserving spelling — *erases the type*: an enum, a
+    packed struct or an unpacked array turns into a plain packed vector
+    and the rewired reader then fails elaboration. A stage whose type
+    cannot be copied is simply not a site.
+    """
+    for tag in _DECLARATION_TAGS:
+        for declaration in _cst.walk_subtrees(module_node, tag):
+            parts = _declaration_parts(declaration)
+            if parts is None:
+                continue
+            data_type, declarators = parts
+            match = next(
+                (d for d in declarators if first_identifier(d) == name),
+                None,
+            )
+            if match is None:
+                continue
+            if _has_unpacked_dimensions(declaration, match):
+                return None
+            try:
+                type_start, _ = _cst.node_span(data_type)
+            except ValueError:
+                return None
+            first_leaf = _first_identifier_leaf(declarators[0])
+            if first_leaf is None:
+                return None
+            text = _normalise(
+                sv.encode("utf-8")[type_start : int(first_leaf["start"])].decode(
+                    "utf-8"
+                )
+            )
+            return text if _COPYABLE_TYPE_RE.match(text) else None
+    return None
 
 
 # --- stage / reader discovery ------------------------------------------------
@@ -258,8 +465,12 @@ class SyncStage:
     ``block_start`` / ``block_end`` are the byte span of the whole
     ``always_ff @(...) LHS <= RHS;`` construct, ``lhs_name`` the stage's
     Q name, ``clock_edge_text`` the literal sensitivity text (e.g.
-    ``posedge dst_clk``, empty when it couldn't be derived) and ``node``
-    the ``kAlwaysStatement`` CST subtree the stage was recognised from.
+    ``posedge dst_clk``, empty when it couldn't be derived), ``node``
+    the ``kAlwaysStatement`` CST subtree the stage was recognised from,
+    ``module_node`` the innermost ``kModuleDeclaration`` containing it
+    (``None`` when the stage is not inside a module — an ``interface``
+    body, say) and ``lhs_type`` the stage LHS's copyable declared type
+    (``None`` when :func:`declared_type` declines; see there).
     """
 
     block_start: int
@@ -267,15 +478,18 @@ class SyncStage:
     lhs_name: str
     clock_edge_text: str
     node: dict
+    module_node: dict | None
+    lhs_type: str | None
 
 
 @dataclass(frozen=True)
 class ReaderRef:
     """A downstream reader's reference to a stage's Q.
 
-    ``start`` / ``end`` are the byte span of the bare
-    ``SymbolIdentifier`` leaf on the reader's RHS (what an insertion
-    operator rewrites); ``node`` is the reader's ``kAlwaysStatement``.
+    ``start`` / ``end`` are the byte span of the reader's right-hand
+    side, which is by construction exactly the stage's bare Q name (see
+    :func:`find_downstream_reader`) — the span an insertion operator
+    rewrites. ``node`` is the reader's ``kAlwaysStatement``.
     """
 
     start: int
@@ -283,15 +497,33 @@ class ReaderRef:
     node: dict
 
 
+def _enclosing_module(
+    modules: list[tuple[tuple[int, int], dict]], span: tuple[int, int]
+) -> dict | None:
+    """Innermost module whose byte span contains ``span``."""
+    best: tuple[int, dict] | None = None
+    for (start, end), module in modules:
+        if start <= span[0] and span[1] <= end:
+            width = end - start
+            if best is None or width < best[0]:
+                best = (width, module)
+    return best[1] if best is not None else None
+
+
 def find_sync_stages(sv: str) -> tuple[list[SyncStage], dict]:
     """Return ``(stages in source order, parsed CST root)``.
 
     The CST root comes back with the stages so callers that also need
-    to walk the tree — e.g. to follow the chain forward with
-    :func:`find_downstream_reader` — don't parse ``sv`` twice.
+    to walk the tree don't parse ``sv`` twice.
     """
     path = sv_to_tempfile(sv)
     cst_root = _cst.parse(path)
+    modules: list[tuple[tuple[int, int], dict]] = []
+    for module in _cst.walk_subtrees(cst_root, "kModuleDeclaration"):
+        try:
+            modules.append((_cst.node_span(module), module))
+        except ValueError:
+            continue
     stages: list[SyncStage] = []
     seen: set[tuple[int, int]] = set()
     for always_ff in _cst.walk_subtrees(cst_root, "kAlwaysStatement"):
@@ -304,6 +536,7 @@ def find_sync_stages(sv: str) -> tuple[list[SyncStage], dict]:
         if (block_start, block_end) in seen:
             continue
         seen.add((block_start, block_end))
+        module_node = _enclosing_module(modules, (block_start, block_end))
         stages.append(
             SyncStage(
                 block_start=block_start,
@@ -311,6 +544,12 @@ def find_sync_stages(sv: str) -> tuple[list[SyncStage], dict]:
                 lhs_name=lhs_name,
                 clock_edge_text=_clock_edge_text(sv, always_ff),
                 node=always_ff,
+                module_node=module_node,
+                lhs_type=(
+                    declared_type(sv, module_node, lhs_name)
+                    if module_node is not None
+                    else None
+                ),
             )
         )
     stages.sort(key=lambda s: (s.block_start, s.block_end))
@@ -322,71 +561,107 @@ def find_stage_spans(sv: str) -> list[tuple[int, int, str]]:
 
     Thin wrapper over :func:`find_sync_stages` kept for
     ``SYNC_CHAIN_DEPTH_PERTURB``, which only ever needed the span and
-    the Q name.
+    the Q name. Deleting a stage needs neither the enclosing module nor
+    the declared type, so that operator's candidate set is unchanged by
+    the extra fields :class:`SyncStage` now carries.
     """
     stages, _root = find_sync_stages(sv)
     return [(s.block_start, s.block_end, s.lhs_name) for s in stages]
 
 
-def _rhs_children(nb_assign: dict) -> list[dict]:
-    """Children of a ``kNonblockingAssignmentStatement`` after the ``<=``.
+def _rhs_expression(nb_assign: dict) -> dict | None:
+    """The ``kExpression`` right-hand side of a non-blocking assignment.
 
     Verible lays the node out as
-    ``[kLPValue, '<=' leaf, kExpression, ';' leaf]``, so everything past
-    the ``<=`` is the right-hand side. Restricting to those children is
-    what keeps a reader search off the LHS (a stage's own Q assignment
-    must never count as a read of itself).
+    ``[kLPValue, '<=' leaf, kExpression, ';' leaf]``, so the right-hand
+    side is the first ``kExpression`` past the ``<=``. Anchoring on the
+    ``<=`` is what keeps a reader search off the LHS (a stage's own Q
+    assignment must never count as a read of itself).
     """
-    children = [c for c in (nb_assign.get("children", []) or []) if isinstance(c, dict)]
+    children = _direct_children(nb_assign)
     for index, child in enumerate(children):
         if child.get("tag") == "<=":
-            return children[index + 1 :]
-    return []
+            for candidate in children[index + 1 :]:
+                if candidate.get("tag") == "kExpression":
+                    return candidate
+            return None
+    return None
 
 
-def _bare_identifier_leaves(node: Any, out: list[dict]) -> None:
-    """Collect ``SymbolIdentifier`` leaves that are *not* part of a dotted ref.
+def _reads_stage_directly(sv: str, always_node: dict, stage: SyncStage) -> dict | None:
+    """First ``kExpression`` in ``always_node`` that *is* the stage's Q.
 
-    Verible spells ``sub.x`` as a ``kReference`` holding a ``kLocalRoot``
-    (``sub``) plus a ``kHierarchyExtension`` (``.x``). Neither half is a
-    plain local signal name, so the whole reference is skipped: rewiring
-    a hierarchical reference is out of scope for a chain operator.
+    "Is", not "mentions": the whole right-hand side has to be the bare
+    identifier. ``q2 <= q1 & q1`` and ``q2 <= q1 & en`` are comb logic
+    on the way, not a direct flop-to-flop edge, so neither is a chain
+    edge an insertion operator may interpose on — for
+    ``CHAIN_STAGE_INSERT`` the pair was never a clean synchroniser
+    chain, and for ``COMB_BETWEEN_STAGES`` the comb cell CDC-014 looks
+    for is already there. Requiring the exact span also means a reader
+    has exactly one rewrite site, however many times it names the
+    stage.
     """
-    if isinstance(node, dict):
-        tag = node.get("tag")
-        if tag == "kHierarchyExtension":
-            return
-        if tag == "kReference" and any(
-            isinstance(c, dict) and c.get("tag") == "kHierarchyExtension"
-            for c in (node.get("children", []) or [])
-        ):
-            return
-        if tag == "SymbolIdentifier" and "start" in node:
-            out.append(node)
-            return
-        for child in node.get("children", []) or []:
-            _bare_identifier_leaves(child, out)
-    elif isinstance(node, list):
-        for child in node:
-            _bare_identifier_leaves(child, out)
+    for nb in _cst.walk_subtrees(always_node, "kNonblockingAssignmentStatement"):
+        rhs = _rhs_expression(nb)
+        if rhs is None:
+            continue
+        text = _node_text(sv, rhs)
+        if text is not None and text.strip() == stage.lhs_name:
+            return rhs
+    return None
 
 
-def find_downstream_reader(cst_root: dict, stage: SyncStage) -> ReaderRef | None:
-    """First ``always_ff`` (source order) that reads ``stage.lhs_name``.
+def _same_clock(sv: str, always_node: dict, stage: SyncStage) -> bool:
+    """True iff ``always_node``'s sensitivity list carries the stage's edge.
 
-    "Reads" means: a ``kNonblockingAssignmentStatement`` inside some
-    *other* ``kAlwaysStatement`` whose right-hand side carries a bare
-    ``SymbolIdentifier`` leaf whose text equals the stage's Q name.
-    The reader block itself may have any shape (reset branches, case
-    statements, multiple edges) — only the *stage* has to be a
-    single-statement single-clock flop.
-
-    Returns ``None`` when nothing downstream consumes the stage's Q via
-    a flop — e.g. a chain tail feeding a continuous ``assign`` or an
-    output port.
+    Whitespace-normalised text equality against
+    ``stage.clock_edge_text``, so a reset-bearing reader
+    ``@(posedge dst_clk or negedge rst_n)`` still matches a stage
+    clocked on ``posedge dst_clk`` — one of its event expressions is
+    that edge. A stage with no recoverable clock text matches nothing.
     """
+    if not stage.clock_edge_text:
+        return False
+    wanted = _normalise(stage.clock_edge_text)
+    for ev in _cst.walk_subtrees(always_node, "kEventExpression"):
+        text = _node_text(sv, ev)
+        if text is not None and _normalise(text) == wanted:
+            return True
+    return False
+
+
+def find_downstream_reader(sv: str, stage: SyncStage) -> ReaderRef | None:
+    """First ``always_ff`` (source order) that is a direct reader of the stage.
+
+    A reader is another ``kAlwaysStatement`` **in the stage's own
+    module** that
+
+    1. is clocked on the same edge — one of its event expressions
+       matches ``stage.clock_edge_text`` verbatim modulo whitespace, so
+       a different-clock flop is a crossing, not the next link of this
+       chain, and a reset-bearing ``@(posedge clk or negedge rst_n)``
+       block still qualifies; and
+    2. holds a non-blocking assignment whose entire right-hand side is
+       the stage's bare Q name, i.e. a direct flop-to-flop edge.
+
+    Returns ``None`` when nothing downstream consumes the stage's Q that
+    way — a chain tail feeding a continuous ``assign`` or an output
+    port, a different-clock consumer, or a reader that already puts comb
+    logic in the path.
+
+    **Scope.** The walk never leaves ``stage.module_node``, so a
+    same-named signal in a *different* module is never mistaken for this
+    stage's reader (rewiring it would leave the reader referring to a
+    declaration it cannot see). Name reuse across nested generate scopes
+    *within* one module is out of scope: this walker is flat and would
+    match the first textual reader in the module regardless of which
+    generate branch declares the name.
+    """
+    scope = stage.module_node
+    if scope is None:
+        return None
     spanned: list[tuple[tuple[int, int], dict]] = []
-    for always_node in _cst.walk_subtrees(cst_root, "kAlwaysStatement"):
+    for always_node in _cst.walk_subtrees(scope, "kAlwaysStatement"):
         try:
             spanned.append((_cst.node_span(always_node), always_node))
         except ValueError:
@@ -395,18 +670,11 @@ def find_downstream_reader(cst_root: dict, stage: SyncStage) -> ReaderRef | None
     for span, always_node in spanned:
         if span == (stage.block_start, stage.block_end):
             continue
-        matches: list[dict] = []
-        for nb in _cst.walk_subtrees(always_node, "kNonblockingAssignmentStatement"):
-            leaves: list[dict] = []
-            for rhs_child in _rhs_children(nb):
-                _bare_identifier_leaves(rhs_child, leaves)
-            matches.extend(
-                leaf for leaf in leaves if str(leaf.get("text", "")) == stage.lhs_name
-            )
-        if not matches:
+        if not _same_clock(sv, always_node, stage):
             continue
-        leaf = min(matches, key=lambda n: int(n["start"]))
-        return ReaderRef(
-            start=int(leaf["start"]), end=int(leaf["end"]), node=always_node
-        )
+        rhs = _reads_stage_directly(sv, always_node, stage)
+        if rhs is None:
+            continue
+        start, end = _cst.node_span(rhs)
+        return ReaderRef(start=start, end=end, node=always_node)
     return None

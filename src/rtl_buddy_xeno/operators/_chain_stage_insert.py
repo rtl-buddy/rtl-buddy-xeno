@@ -15,7 +15,7 @@ reader so it consumes the new register instead.
 
     // mutant (site = stage `sync_meta`)
     always_ff @(posedge dst_clk) sync_meta <= src_q;
-    logic [$bits(sync_meta)-1:0] sync_meta_xeno_stage_1;
+    logic [7:0] sync_meta_xeno_stage_1;
     always_ff @(posedge dst_clk) sync_meta_xeno_stage_1 <= sync_meta;
     always_ff @(posedge dst_clk) sync_q    <= sync_meta_xeno_stage_1;
 
@@ -32,6 +32,14 @@ chain would not actually get deeper, and the mutant would differ from
 its parent only by dead logic. So the site set is exactly "stages that
 have somewhere to insert *into*".
 
+**What counts as a reader** is :func:`._chain_helpers.find_downstream_reader`'s
+call: an ``always_ff`` *in the stage's own module*, clocked on the same
+edge, whose non-blocking right-hand side is the stage's bare Q. A
+different-clock consumer is a crossing rather than the next link of
+this chain, and a reader that already computes on the Q
+(``q2 <= q1 & en``) was never a clean synchroniser chain — neither is a
+site.
+
 **Naming.** The new register is ``fresh_identifier(sv, lhs,
 "xeno_stage")`` — ``<lhs>_xeno_stage_<n>`` for the lowest free ``n``,
 with any existing ``_xeno_stage_<digits>`` suffix stripped off the base
@@ -41,11 +49,20 @@ suffix, which is what makes repeated application on one chain (the way
 to reach CDC-018's ≥4-stage cascade from a 2-deep parent) produce
 distinct, collision-free identifiers.
 
-**Width.** The declaration is written ``logic [$bits(<lhs>)-1:0]
-<new>;`` on purpose: ``$bits`` of the stage's own Q is correct for any
-LHS — packed vector, 1-bit ``logic``, typedef'd struct, output port —
-without the operator having to locate and re-parse the LHS declaration
-from the CST. That keeps this operator inside the Verible layer.
+**Type.** The declaration copies the stage LHS's own declared data
+type verbatim — ``logic [7:0] sync_meta_xeno_stage_1;`` for a
+``logic [7:0]`` stage, ``logic signed [3:0] ...`` for a signed one,
+bare ``logic ...`` for a scalar. The width-only spelling
+``logic [$bits(<lhs>)-1:0] <new>;`` was the original emission and is
+wrong: ``$bits`` preserves the *width* while erasing the *type*, so an
+enum- or struct-typed stage would be re-declared as a plain packed
+vector and the rewired reader could then fail elaboration. The lookup
+is :func:`._chain_helpers.declared_type`, which is deliberately narrow
+— packed ``logic``/``reg``/``bit``/``wire`` vectors and scalars, with
+an optional signedness keyword, and nothing else. A stage whose type it
+declines (typedef names, enums, structs, unpacked arrays, ``int``) is
+**not a site**, which keeps the operator inside the Verible layer
+without ever emitting a declaration it cannot vouch for.
 
 Issue: xeno#13. Discovery: rtl-buddy-cdc#230's coverage gap on CDC-018.
 """
@@ -62,20 +79,26 @@ _INFIX = "xeno_stage"
 
 
 def _find_sites(sv: str) -> list[tuple[_chain.SyncStage, _chain.ReaderRef]]:
-    """Every sync stage that has a downstream non-blocking reader.
+    """Every sync stage that can carry a synthesised sibling flop.
 
-    Source order (stage position). A stage whose clock sensitivity text
-    couldn't be recovered verbatim is skipped too — this operator has to
-    *emit* that clock into a synthesised block, so an unrecoverable one
-    is not a usable site (the deletion-side operator has no such need,
-    which is why the shared recogniser keeps the stage).
+    Source order (stage position). Three requirements on top of "is a
+    recognised stage":
+
+    - the clock sensitivity text was recovered verbatim — this operator
+      has to *emit* that clock into a synthesised block (the
+      deletion-side operator has no such need, which is why the shared
+      recogniser keeps the stage);
+    - the LHS's declared type is copyable, because the new register is
+      declared with it (see the module docstring's "Type");
+    - there is a same-clock, same-module, direct non-blocking reader to
+      insert *into*.
     """
-    stages, cst_root = _chain.find_sync_stages(sv)
+    stages, _cst_root = _chain.find_sync_stages(sv)
     sites: list[tuple[_chain.SyncStage, _chain.ReaderRef]] = []
     for stage in stages:
-        if not stage.clock_edge_text:
+        if not stage.clock_edge_text or stage.lhs_type is None:
             continue
-        reader = _chain.find_downstream_reader(cst_root, stage)
+        reader = _chain.find_downstream_reader(sv, stage)
         if reader is None:
             continue
         sites.append((stage, reader))
@@ -90,13 +113,15 @@ def _apply(
 ) -> str:
     """Emit the mutant: declare + drive the new flop, rewire the reader.
 
-    Two byte-splices on the parent source. They are applied from the
+    The declaration copies ``stage.lhs_type`` (never ``None`` here —
+    :func:`_find_sites` filters those stages out). Two byte-splices on
+    the parent source. They are applied from the
     highest offset downwards so the lower one's offsets stay valid —
     and which of the two is higher depends on whether the reader sits
     after the stage (the usual chain order) or before it (legal, and
     exercised by the tests), so both orders are handled explicitly.
     """
-    declaration = f"logic [$bits({stage.lhs_name})-1:0] {new_name};"
+    declaration = f"{stage.lhs_type} {new_name};"
     flop = f"always_ff @({stage.clock_edge_text}) {new_name} <= {stage.lhs_name};"
     lines = [declaration, flop]
     if reader.start >= stage.block_end:

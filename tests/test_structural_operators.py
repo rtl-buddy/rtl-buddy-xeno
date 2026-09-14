@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from rtl_buddy_xeno import Mutator, MutationKind
+from rtl_buddy_xeno import slang as _slang
 
 pytest.importorskip("rtl_buddy_view")
 if shutil.which("verible-verilog-syntax") is None:
@@ -209,19 +210,20 @@ def _insert_mutants(sv: str) -> list:
 
 
 def test_chain_stage_insert_site_count_on_fixture() -> None:
-    """Sites = stages that have a downstream non-blocking reader.
+    """Sites = stages that have a same-clock, direct non-blocking reader.
 
-    ``sync_chain_readers.sv`` holds 5 recognised stages (``sync_meta``,
-    ``sync_q``, ``sync_out``, ``flag_meta``, ``lone_q``). ``sync_out``
-    is consumed only by a continuous ``assign`` and ``lone_q`` by
-    nothing at all, so 5 - 2 = 3 sites.
+    ``sync_chain_readers.sv`` holds 7 recognised stages (``sync_meta``,
+    ``sync_q``, ``sync_out``, ``flag_meta``, ``lone_q``, ``sg_meta``,
+    ``sg_q``). ``sync_out`` and ``sg_q`` are consumed only by a
+    continuous ``assign`` and ``lone_q`` by nothing at all, so
+    7 - 3 = 4 sites.
     """
     mutants = _insert_mutants(_insert_sv())
-    assert len(mutants) == 3
+    assert len(mutants) == 4
     summaries = " ".join(m.diff_summary for m in mutants)
-    for name in ("sync_meta", "sync_q", "flag_meta"):
+    for name in ("sync_meta", "sync_q", "flag_meta", "sg_meta"):
         assert f"after `{name}`" in summaries
-    for name in ("sync_out", "lone_q"):
+    for name in ("sync_out", "lone_q", "sg_q"):
         assert f"after `{name}`" not in summaries
 
 
@@ -244,7 +246,7 @@ def test_chain_stage_insert_rewires_reader_only() -> None:
     assert "sync_q    <= sync_meta_xeno_stage_1;" in mutant.sv
     assert "sync_meta <= src_q;" in mutant.sv
     assert "sync_meta_xeno_stage_1 <= sync_meta;" in mutant.sv
-    assert "logic [$bits(sync_meta)-1:0] sync_meta_xeno_stage_1;" in mutant.sv
+    assert "logic [7:0] sync_meta_xeno_stage_1;" in mutant.sv
 
 
 def test_chain_stage_insert_two_deep_chain_yields_one_site() -> None:
@@ -297,15 +299,23 @@ def test_chain_stage_insert_reader_before_stage() -> None:
 
 
 def test_chain_stage_insert_reapplication_numbers_the_suffix() -> None:
-    """Applying the operator to its own output yields ``_xeno_stage_2``,
-    not a doubled ``_xeno_stage_1_xeno_stage_1`` suffix."""
+    """Applying the operator *to the stage it just inserted* yields
+    ``_xeno_stage_2``, not a doubled ``_xeno_stage_1_xeno_stage_1``.
+
+    The second round sees two sites — the original ``s1`` and the
+    inserted ``s1_xeno_stage_1`` — and only the latter exercises the
+    suffix-stripping path, so the assertion picks it out by name rather
+    than searching every mutant for the string.
+    """
     [first] = _insert_mutants(_TWO_DEEP_SV)
     assert "s1_xeno_stage_1" in first.sv
     second_round = _insert_mutants(first.sv)
-    assert second_round
-    for mutant in second_round:
-        assert "_xeno_stage_2" in mutant.diff_summary
-        assert "_xeno_stage_1_xeno_stage" not in mutant.sv
+    [on_inserted] = [
+        m for m in second_round if "after `s1_xeno_stage_1`" in m.diff_summary
+    ]
+    assert "insert sync stage `s1_xeno_stage_2`" in on_inserted.diff_summary
+    assert "s1_xeno_stage_1_xeno_stage" not in on_inserted.sv
+    assert "s2 <= s1_xeno_stage_2;" in on_inserted.sv
 
 
 def test_chain_stage_insert_prediction_conservative() -> None:
@@ -330,3 +340,162 @@ def test_chain_stage_insert_candidates_match_generate() -> None:
     assert len(sites) == len(_insert_mutants(sv))
     # candidates() is source order; generate() shuffles.
     assert [s.line for s in sites] == sorted(s.line for s in sites)
+
+
+# --- CHAIN_STAGE_INSERT: reader-matching guardrails --------------------------
+
+# Two modules that reuse a stage name. The walker is module-scoped, so
+# `dup` in `top_b` must find `top_b`'s own reader and never `top_a`'s —
+# rewiring the other module's reader would leave it naming a declaration
+# it cannot see.
+_CROSS_MODULE_SV = (
+    "module top_a (input logic clk, input logic d, output logic q);\n"
+    "  logic dup, dup_q;\n"
+    "  always_ff @(posedge clk) dup   <= d;\n"
+    "  always_ff @(posedge clk) dup_q <= dup;\n"
+    "  assign q = dup_q;\n"
+    "endmodule\n"
+    "\n"
+    "module top_b (input logic clk, input logic d, output logic q);\n"
+    "  logic dup, dup_q;\n"
+    "  always_ff @(posedge clk) dup   <= d;\n"
+    "  always_ff @(posedge clk) dup_q <= dup;\n"
+    "  assign q = dup_q;\n"
+    "endmodule\n"
+)
+
+
+def _elaborates(sv: str) -> bool:
+    """True iff pyslang elaborates ``sv`` with no error-or-worse diagnostic.
+
+    Skips the calling test when the ``[slang]`` extra isn't installed —
+    the repo-wide gate in ``test_mutant_validity.py`` does the same.
+    """
+    if not _slang.is_available():
+        pytest.skip("pyslang not installed; cannot check elaboration")
+    compilation = _slang.elaborate_text(sv)
+    return not [d for d in compilation.getAllDiagnostics() if d.isError()]
+
+
+def test_chain_stage_insert_never_crosses_module_scope() -> None:
+    """One site per module, each rewiring only its own module's reader."""
+    mutants = _insert_mutants(_CROSS_MODULE_SV)
+    assert len(mutants) == 2
+    assert all("after `dup`" in m.diff_summary for m in mutants)
+    for mutant in mutants:
+        head, sep, tail = mutant.sv.partition("module top_b")
+        assert sep
+        touched = [part for part in (head, tail) if "dup_xeno_stage_1" in part]
+        # The declaration, the new flop's LHS and the rewired reader —
+        # all three inside one module, none in the other.
+        assert len(touched) == 1
+        assert touched[0].count("dup_xeno_stage_1") == 3
+        untouched = head if touched[0] is tail else tail
+        assert "dup_q <= dup;" in untouched
+    # Both modules still elaborate: the rewired reader sees the new
+    # declaration because it is a sibling in the same scope.
+    assert [m.diff_summary for m in mutants if not _elaborates(m.sv)] == []
+
+
+def test_chain_stage_insert_skips_different_clock_reader() -> None:
+    """A consumer on another clock is a crossing, not the next chain link."""
+    sv = (
+        "module m (input logic clk_a, input logic clk_b, input logic d,\n"
+        "          output logic q);\n"
+        "  logic s1, s2;\n"
+        "  always_ff @(posedge clk_a) s1 <= d;\n"
+        "  always_ff @(posedge clk_b) s2 <= s1;\n"
+        "  assign q = s2;\n"
+        "endmodule\n"
+    )
+    assert _insert_mutants(sv) == []
+
+
+def test_chain_stage_insert_skips_repeated_reference_reader() -> None:
+    """``q2 <= q1 & q1`` reads the stage twice through comb logic — the
+    edge is not a direct flop-to-flop wire, so it is not a site (and
+    there is no single span to rewrite)."""
+    sv = (
+        "module m (input logic clk, input logic d, output logic q);\n"
+        "  logic q1, q2;\n"
+        "  always_ff @(posedge clk) q1 <= d;\n"
+        "  always_ff @(posedge clk) q2 <= q1 & q1;\n"
+        "  assign q = q2;\n"
+        "endmodule\n"
+    )
+    assert _insert_mutants(sv) == []
+
+
+def test_chain_stage_insert_skips_expression_reader() -> None:
+    """``q2 <= q1 & en`` is comb logic on the way: not a synchroniser stage."""
+    sv = (
+        "module m (input logic clk, input logic d, input logic en,\n"
+        "          output logic q);\n"
+        "  logic q1, q2;\n"
+        "  always_ff @(posedge clk) q1 <= d;\n"
+        "  always_ff @(posedge clk) q2 <= q1 & en;\n"
+        "  assign q = q2;\n"
+        "endmodule\n"
+    )
+    assert _insert_mutants(sv) == []
+
+
+# --- CHAIN_STAGE_INSERT: declared-type copy ----------------------------------
+
+
+def test_chain_stage_insert_skips_enum_typed_stage() -> None:
+    """A typedef'd enum can't be re-declared by copying ``logic [N-1:0]``
+    (and ``$bits`` would erase the type outright), so it is not a site."""
+    sv = (
+        "typedef enum logic [1:0] {S_IDLE, S_RUN, S_DONE} state_t;\n"
+        "module m (input logic clk, input state_t d, output state_t q);\n"
+        "  state_t s1;\n"
+        "  always_ff @(posedge clk) s1 <= d;\n"
+        "  always_ff @(posedge clk) q  <= s1;\n"
+        "endmodule\n"
+    )
+    assert _insert_mutants(sv) == []
+
+
+def test_chain_stage_insert_skips_unpacked_array_stage() -> None:
+    """Copying only the packed half of ``logic [3:0] a1 [0:1]`` would
+    change the object's shape, so an unpacked declarator is not a site."""
+    sv = (
+        "module m (input logic clk, input logic [3:0] d [0:1],\n"
+        "          output logic [3:0] q);\n"
+        "  logic [3:0] a1 [0:1];\n"
+        "  logic [3:0] a2 [0:1];\n"
+        "  always_ff @(posedge clk) a1 <= d;\n"
+        "  always_ff @(posedge clk) a2 <= a1;\n"
+        "  assign q = a2[0];\n"
+        "endmodule\n"
+    )
+    assert _insert_mutants(sv) == []
+
+
+def test_chain_stage_insert_copies_signedness() -> None:
+    """A ``logic signed [3:0]`` stage declares a ``logic signed [3:0]``
+    sibling — the ``$bits`` spelling would have dropped the sign."""
+    [mutant] = [
+        m for m in _insert_mutants(_insert_sv()) if "after `sg_meta`" in m.diff_summary
+    ]
+    assert "logic signed [3:0] sg_meta_xeno_stage_1;" in mutant.sv
+    assert "sg_meta_xeno_stage_1 <= sg_meta;" in mutant.sv
+    assert "sg_q    <= sg_meta_xeno_stage_1;" in mutant.sv
+
+
+def test_chain_stage_insert_copies_port_declared_type() -> None:
+    """The stage's Q may be declared by an ``output`` port rather than a
+    module-body declaration; the port's data type is copied just the same."""
+    sv = (
+        "module m (input logic clk, input logic [7:0] d,\n"
+        "          output logic [7:0] q, output logic [7:0] r);\n"
+        "  always_ff @(posedge clk) q <= d;\n"
+        "  always_ff @(posedge clk) r <= q;\n"
+        "endmodule\n"
+    )
+    mutants = _insert_mutants(sv)
+    assert len(mutants) == 1
+    assert "logic [7:0] q_xeno_stage_1;" in mutants[0].sv
+    assert "r <= q_xeno_stage_1;" in mutants[0].sv
+    assert _elaborates(mutants[0].sv)

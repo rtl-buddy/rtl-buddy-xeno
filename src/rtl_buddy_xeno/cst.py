@@ -14,6 +14,18 @@ index). It exists for two reasons:
    we pass it straight to view. xeno never reads ``root_config.yaml``
    itself — that's the orchestrator's job (see #4).
 
+**Cache-shape contract.** The cache we write to is the viewer's own
+user-global, content-hashed CST cache — the same directory, the same
+keys. Whatever :func:`_run_verible_subprocess` returns is what
+``get_or_compute`` persists, and the viewer reads those very entries
+back with its own reader. So the compute callback MUST store exactly
+the shape the viewer's own callback stores: the **bare CST tree**
+(``{"tag": ..., "children": [...]}``), never Verible's path-keyed
+``{"<path>": {"tree": ...}}`` envelope. Storing the envelope poisons
+the shared cache for the viewer, which walks a dict with no ``tag`` /
+``children`` and registers zero modules ("Known modules: []") until
+the file's content changes — see #27 and rtl-buddy/rtl-buddy-sch#186.
+
 See umbrella #2 and #4 for the layering decision; view#109 for the
 upstream that made these helpers public.
 """
@@ -167,6 +179,10 @@ def parse(
 ) -> dict:
     """Parse ``sv_path`` to a Verible CST (JSON), with caching.
 
+    Returns the **bare CST tree**, which is also the shape stored in
+    the shared cache (see the module docstring's cache-shape
+    contract).
+
     Locates the Verible binary via PATH, falls back to view's vendored
     copy. The ``cache_dir`` argument is passed straight through to
     view's :func:`rtl_buddy_view.cst_cache.get_or_compute`; ``None``
@@ -184,9 +200,14 @@ def parse(
         compute=_run_verible_subprocess,
         cache_dir=cache_dir,
     )
-    # Verible's --export_json schema wraps the tree as
-    # ``{ "<filename>": { "tree": { ... } } }``. Unwrap to the tree
-    # root so consumers walk the structural CST directly.
+    # Backward compatibility only. `_run_verible_subprocess` now
+    # unwraps Verible's ``{ "<filename>": { "tree": { ... } } }``
+    # envelope before the cache write, so a freshly computed entry is
+    # already the bare tree. Older xeno releases stored the envelope
+    # into the cache the viewer shares (#27,
+    # rtl-buddy/rtl-buddy-sch#186), and those entries stay on disk
+    # until their file's content changes — this unwraps them on read
+    # so an already-poisoned cache doesn't break xeno too.
     if isinstance(raw, dict) and len(raw) == 1:
         only_value = next(iter(raw.values()))
         if isinstance(only_value, dict) and "tree" in only_value:
@@ -205,8 +226,21 @@ def _run_verible_subprocess(binary: Path, path: Path) -> dict:
 
     Mirrors the same subprocess invocation view uses internally
     (``verible-verilog-syntax --export_json --printtree <file>``). On
-    cache miss view calls this with ``(binary, path)``; we just emit
-    the JSON.
+    cache miss view calls this with ``(binary, path)``.
+
+    Whatever this returns is what ``get_or_compute`` persists into the
+    cache the viewer shares, so it MUST be the same shape the viewer's
+    own callback (``rtl_buddy_view.frontend.verible._run_verible``)
+    stores: the bare tree, with Verible's ``{ "<path>": { "tree": ...
+    } }`` envelope already unwrapped. The entry is keyed by the path
+    string exactly as passed on the command line — the same lookup the
+    viewer does — so the two never disagree about which entry is "the"
+    file. See the module docstring, #27 and
+    rtl-buddy/rtl-buddy-sch#186.
+
+    The viewer raises ``VeribleParseError`` for a missing entry / tree;
+    xeno has no such class, so we raise :class:`RuntimeError` — what
+    this function already raises on a non-zero exit.
     """
     import json
     import subprocess
@@ -222,7 +256,17 @@ def _run_verible_subprocess(binary: Path, path: Path) -> dict:
         raise RuntimeError(
             f"verible-verilog-syntax failed on {path}: {proc.stderr.strip()}"
         )
-    return json.loads(proc.stdout)
+    payload = json.loads(proc.stdout)
+    file_entry = payload.get(str(path))
+    if file_entry is None:
+        raise RuntimeError(
+            f"verible-verilog-syntax produced no entry for {path}; "
+            f"likely a syntax error (stderr: {proc.stderr.strip()})."
+        )
+    tree = file_entry.get("tree")
+    if tree is None:
+        raise RuntimeError(f"verible-verilog-syntax produced no tree for {path}.")
+    return tree  # type: ignore[no-any-return]
 
 
 def walk_tokens(cst: dict, kind: str) -> "list[tuple[int, int, str]]":

@@ -1,6 +1,6 @@
-// Chain-shaped fixture for CHAIN_STAGE_INSERT (and, later, the
-// COMB_BETWEEN_STAGES operator): sync stages *with* and *without* a
-// downstream non-blocking reader, on both multi-bit and 1-bit signals.
+// Chain-shaped fixture for CHAIN_STAGE_INSERT and COMB_BETWEEN_STAGES:
+// sync stages *with* and *without* a downstream non-blocking
+// reader, on both multi-bit and 1-bit signals.
 //
 // Recognised sync stages (single-clock, single non-blocking assignment):
 //   sync_meta, sync_q, sync_out, flag_meta, lone_q, sg_meta, sg_q  -> 7
@@ -10,7 +10,7 @@
 //   flag_meta (read by the reset-bearing flag_out block),
 //   sg_meta (read by sg_q)                                         -> 4
 // sync_out and sg_q are read only by a continuous `assign`, and lone_q
-// by nothing at all, so none of the three is a CHAIN_STAGE_INSERT site.
+// by nothing at all, so none of the three is a site for either operator.
 module sync_chain_readers (
     input  logic              dst_clk,
     input  logic              rst_n,

@@ -3,9 +3,9 @@
 Public surface ratified in #3 (API design) and #4 (parser layering).
 This module owns:
 
-- :class:`MutationKind` — the operator enum (12 kinds; #3 split rb-mut's
-  ``cond`` into ``COND_NEGATE`` + ``COND_CONST``, and #13 added
-  ``CHAIN_STAGE_INSERT``).
+- :class:`MutationKind` — the operator enum (13 kinds; #3 split rb-mut's
+  ``cond`` into ``COND_NEGATE`` + ``COND_CONST``, #13 added
+  ``CHAIN_STAGE_INSERT`` and #14 ``COMB_BETWEEN_STAGES``).
 - :class:`Prediction` — flat-shape oracle prediction. CDC fields
   (``cdc_rules_added`` / ``cdc_rules_removed``) and FPV fields
   (``perturbs_signals`` / ``perturbs_liveness``) co-exist on one type
@@ -39,7 +39,7 @@ from pathlib import Path
 class MutationKind(StrEnum):
     """Mutation operators across both consumer pools.
 
-    First six are cdc#221 Layer B's structural-CDC operators; remainder
+    First seven are cdc#221 Layer B's structural-CDC operators; remainder
     are rtl_buddy#206's semantic operators. See umbrella #2 for the
     full table including parser-layer assignments and MCY-expressibility.
     """
@@ -48,6 +48,7 @@ class MutationKind(StrEnum):
     CLOCK_POLARITY_SWAP = "clock_polarity_swap"
     SYNC_CHAIN_DEPTH_PERTURB = "sync_chain_depth_perturb"
     CHAIN_STAGE_INSERT = "chain_stage_insert"
+    COMB_BETWEEN_STAGES = "comb_between_stages"
     BIT_EXTRACT_PERMUTE = "bit_extract_permute"
     ATTRIBUTE_TOGGLE = "attribute_toggle"
     RESET_POLARITY_FLIP = "reset_polarity_flip"

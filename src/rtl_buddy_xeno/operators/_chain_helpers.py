@@ -8,6 +8,8 @@ Consumers:
 
 - :mod:`._sync_chain_depth_perturb` — deletes a stage (chain depth -1).
 - :mod:`._chain_stage_insert` — synthesises a stage (chain depth +1).
+- :mod:`._comb_between_stages` — interposes a comb cell on a chain edge
+  (chain depth unchanged, chain *purity* broken).
 
 Everything here sits in the **Verible CST** parser layer (see the
 no-straddle rule in :mod:`rtl_buddy_xeno.operators`): site discovery
@@ -25,8 +27,8 @@ shape ``SYNC_CHAIN_DEPTH_PERTURB`` shipped with):
 3. The LHS is a bare identifier (not a bit-select, not a hierarchical
    reference).
 
-A recognised stage additionally carries the two facts the *insertion*
-operators need and the deletion operator does not: the
+A recognised stage additionally carries the two facts the two
+*insertion* operators need and the deletion operator does not: the
 ``kModuleDeclaration`` it lives in (:func:`find_downstream_reader`
 never leaves that subtree) and, when it can be recovered, the stage
 LHS's declared data type (:func:`declared_type`).

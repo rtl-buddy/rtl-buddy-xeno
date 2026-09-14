@@ -57,7 +57,7 @@ runs across multiple kinds.
 
 ## Mutation kinds
 
-Twelve operators covering both consumer pools, all implemented. See
+Thirteen operators covering both consumer pools, all implemented. See
 umbrella [xeno#2](https://github.com/rtl-buddy/rtl-buddy-xeno/issues/2)
 for the full table including MCY-expressibility.
 
@@ -68,6 +68,7 @@ for the full table including MCY-expressibility.
 | `ASSIGN_DROP`                   | implemented | rtl_buddy#206 | Verible + slang            | property survival on the LHS                               |
 | `SYNC_CHAIN_DEPTH_PERTURB`      | implemented | cdc#221       | Verible                    | CDC-002 / -018 (rationale only — no positive claim)        |
 | `CHAIN_STAGE_INSERT`            | implemented | cdc#221       | Verible                    | CDC-018 (rationale only — no positive claim)               |
+| `COMB_BETWEEN_STAGES`           | implemented | cdc#221       | Verible                    | CDC-014 (rationale only — no positive claim)               |
 | `BIT_EXTRACT_PERMUTE`           | implemented | cdc#221       | Verible                    | CDC-019 / -020 (rationale only — no positive claim)        |
 | `RESET_POLARITY_FLIP`           | implemented | cdc#221       | Verible (+ optional slang) | RDC-007 (rationale only — no positive claim)               |
 | `ARITH_FLIP` (`+ ↔ -`, `* ↔ /`) | implemented | rtl_buddy#206 | Verible (+ optional slang) | property survival                                          |
@@ -76,14 +77,14 @@ for the full table including MCY-expressibility.
 | `COND_CONST`                    | implemented | rtl_buddy#206 | Verible                    | property survival                                          |
 | `PORT_BINDING_SWAP`             | implemented | rtl_buddy#206 | Verible                    | property survival + maybe CDC                              |
 
-All twelve kinds are implemented — `IMPLEMENTED_KINDS == frozenset(MutationKind)`,
+All thirteen kinds are implemented — `IMPLEMENTED_KINDS == frozenset(MutationKind)`,
 no operator raises `NotImplementedError`. The CDC rule-id predictions
 are deliberately conservative: an operator only populates
 `cdc_rules_added` when it can structurally justify the claim from its
 parser view (`CLOCK_POLARITY_SWAP` requires a ≥2-stage chain heuristic;
 `ATTRIBUTE_TOGGLE` keys off a known attribute name). The context-blind
 operators (`SYNC_CHAIN_DEPTH_PERTURB`, `CHAIN_STAGE_INSERT`,
-`BIT_EXTRACT_PERMUTE`, `RESET_POLARITY_FLIP`) leave `cdc_rules_added`
+`COMB_BETWEEN_STAGES`, `BIT_EXTRACT_PERMUTE`, `RESET_POLARITY_FLIP`) leave `cdc_rules_added`
 empty and record the candidate rule in the `rationale` instead, so the downstream coverage
 report measures the actual fire rather than trusting an over-confident
 guess. The rule-ids above mirror `rtl-buddy-cdc`'s rule pack by

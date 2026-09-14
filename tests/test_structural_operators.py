@@ -1,9 +1,12 @@
-"""Per-operator coverage for BIT_EXTRACT_PERMUTE and SYNC_CHAIN_DEPTH_PERTURB.
+"""Per-operator coverage for the structural CDC operators.
 
-These two are the highest-risk operators per #6's risk table — both
-do structural changes whose construction-safety isn't a foregone
-conclusion. The validity gate (Verible parse + pyslang elaborate)
-gives the strong guarantee; these tests cover per-operator semantics.
+BIT_EXTRACT_PERMUTE and SYNC_CHAIN_DEPTH_PERTURB are the highest-risk
+operators per #6's risk table — both do structural changes whose
+construction-safety isn't a foregone conclusion. CHAIN_STAGE_INSERT
+(xeno#13) is riskier still: it *synthesises* source rather than
+deleting or rewriting in place. The validity gate (Verible parse +
+pyslang elaborate) gives the strong guarantee; these tests cover
+per-operator semantics.
 """
 
 from __future__ import annotations
@@ -179,3 +182,151 @@ def test_sync_chain_depth_perturb_skips_blocks_with_if_statements() -> None:
         Mutator.from_sv(sv).generate([MutationKind.SYNC_CHAIN_DEPTH_PERTURB], count=99)
     )
     assert mutants == []
+
+
+# --- CHAIN_STAGE_INSERT ------------------------------------------------------
+
+_INSERT_FIXTURE = Path(__file__).parent / "fixtures" / "sync_chain_readers.sv"
+
+# A 2-deep chain: `s1` has a downstream flop reader, `s2` only feeds an
+# `assign`, so exactly one of the two stages is an insertion site.
+_TWO_DEEP_SV = (
+    "module m (input logic clk, input logic d, output logic q);\n"
+    "  logic s1, s2;\n"
+    "  always_ff @(posedge clk) s1 <= d;\n"
+    "  always_ff @(posedge clk) s2 <= s1;\n"
+    "  assign q = s2;\n"
+    "endmodule\n"
+)
+
+
+def _insert_sv() -> str:
+    return _INSERT_FIXTURE.read_text()
+
+
+def _insert_mutants(sv: str) -> list:
+    return list(Mutator.from_sv(sv).generate([MutationKind.CHAIN_STAGE_INSERT], 999))
+
+
+def test_chain_stage_insert_site_count_on_fixture() -> None:
+    """Sites = stages that have a downstream non-blocking reader.
+
+    ``sync_chain_readers.sv`` holds 5 recognised stages (``sync_meta``,
+    ``sync_q``, ``sync_out``, ``flag_meta``, ``lone_q``). ``sync_out``
+    is consumed only by a continuous ``assign`` and ``lone_q`` by
+    nothing at all, so 5 - 2 = 3 sites.
+    """
+    mutants = _insert_mutants(_insert_sv())
+    assert len(mutants) == 3
+    summaries = " ".join(m.diff_summary for m in mutants)
+    for name in ("sync_meta", "sync_q", "flag_meta"):
+        assert f"after `{name}`" in summaries
+    for name in ("sync_out", "lone_q"):
+        assert f"after `{name}`" not in summaries
+
+
+def test_chain_stage_insert_adds_exactly_one_always_ff() -> None:
+    """The mutant is the parent plus one synthesised flop — no more."""
+    sv = _insert_sv()
+    for mutant in _insert_mutants(sv):
+        assert mutant.sv.count("always_ff") == sv.count("always_ff") + 1
+
+
+def test_chain_stage_insert_rewires_reader_only() -> None:
+    """The reader consumes the new register; the stage still drives its
+    original Q (the insertion goes *between* them, it doesn't rename
+    the stage)."""
+    [mutant] = [
+        m
+        for m in _insert_mutants(_insert_sv())
+        if "after `sync_meta`" in m.diff_summary
+    ]
+    assert "sync_q    <= sync_meta_xeno_stage_1;" in mutant.sv
+    assert "sync_meta <= src_q;" in mutant.sv
+    assert "sync_meta_xeno_stage_1 <= sync_meta;" in mutant.sv
+    assert "logic [$bits(sync_meta)-1:0] sync_meta_xeno_stage_1;" in mutant.sv
+
+
+def test_chain_stage_insert_two_deep_chain_yields_one_site() -> None:
+    """Only the stage with a flop reader is a site — the tail isn't."""
+    mutants = _insert_mutants(_TWO_DEEP_SV)
+    assert len(mutants) == 1
+    assert "after `s1`" in mutants[0].diff_summary
+
+
+def test_chain_stage_insert_lone_flop_yields_no_site() -> None:
+    """A single flop nothing reads — inserting would leave a dangling reg."""
+    sv = (
+        "module m (input logic clk, input logic d, output logic q);\n"
+        "  always_ff @(posedge clk) q <= d;\n"
+        "endmodule\n"
+    )
+    assert _insert_mutants(sv) == []
+
+
+def test_chain_stage_insert_assign_only_reader_yields_no_site() -> None:
+    """A continuous ``assign`` is not a reader for this operator: the
+    inserted flop has to land between two *sequential* elements."""
+    sv = (
+        "module m (input logic clk, input logic d, output logic q);\n"
+        "  logic s1;\n"
+        "  always_ff @(posedge clk) s1 <= d;\n"
+        "  assign q = s1;\n"
+        "endmodule\n"
+    )
+    assert _insert_mutants(sv) == []
+
+
+def test_chain_stage_insert_reader_before_stage() -> None:
+    """The reader may sit textually *before* the stage — the two byte
+    splices are applied highest-offset-first either way."""
+    sv = (
+        "module m (input logic clk, input logic d, output logic q);\n"
+        "  logic s1, s2;\n"
+        "  always_ff @(posedge clk) s2 <= s1;\n"
+        "  always_ff @(posedge clk) s1 <= d;\n"
+        "  assign q = s2;\n"
+        "endmodule\n"
+    )
+    mutants = _insert_mutants(sv)
+    assert len(mutants) == 1
+    mutant = mutants[0]
+    assert "s2 <= s1_xeno_stage_1;" in mutant.sv
+    assert "s1_xeno_stage_1 <= s1;" in mutant.sv
+    assert "s1 <= d;" in mutant.sv
+
+
+def test_chain_stage_insert_reapplication_numbers_the_suffix() -> None:
+    """Applying the operator to its own output yields ``_xeno_stage_2``,
+    not a doubled ``_xeno_stage_1_xeno_stage_1`` suffix."""
+    [first] = _insert_mutants(_TWO_DEEP_SV)
+    assert "s1_xeno_stage_1" in first.sv
+    second_round = _insert_mutants(first.sv)
+    assert second_round
+    for mutant in second_round:
+        assert "_xeno_stage_2" in mutant.diff_summary
+        assert "_xeno_stage_1_xeno_stage" not in mutant.sv
+
+
+def test_chain_stage_insert_prediction_conservative() -> None:
+    """Deepening a chain is the CDC-018 shape, but only from depth >=3.
+    The CST recogniser can't count upstream stages, so the rationale
+    names the rule and ``cdc_rules_added`` stays empty."""
+    [first, *_] = Mutator.from_sv(_insert_sv()).generate(
+        [MutationKind.CHAIN_STAGE_INSERT], count=1
+    )
+    assert first.prediction.cdc_rules_added == frozenset()
+    assert first.prediction.cdc_rules_removed == frozenset()
+    assert "CDC-018" in first.prediction.rationale
+    assert first.prediction.perturbs_liveness is False
+    lhs = first.diff_summary.rsplit("after `", 1)[1].rstrip("`")
+    assert first.prediction.perturbs_signals == frozenset({lhs})
+
+
+def test_chain_stage_insert_candidates_match_generate() -> None:
+    """``candidates()`` enumerates exactly the sites ``generate()`` mutates."""
+    sv = _insert_sv()
+    sites = list(Mutator.from_sv(sv).candidates([MutationKind.CHAIN_STAGE_INSERT]))
+    assert len(sites) == len(_insert_mutants(sv))
+    # candidates() is source order; generate() shuffles.
+    assert [s.line for s in sites] == sorted(s.line for s in sites)

@@ -9,18 +9,26 @@ guards against ("synchronizer must have ≥2 stages") — the cdc fuzz
 oracle should observe CDC-002 fire on the mutated source.
 
 Heuristics for "looks like a sync-chain stage" live in
-:mod:`._chain_helpers` (shared with ``CHAIN_STAGE_INSERT`` so both
-directions of the chain mutation see an identical candidate set):
+:mod:`._chain_helpers`, which recognises two stage shapes. This
+operator takes **only the reset-free one** (shape A):
 
 1. The ``always_ff`` block's sensitivity list has exactly one edge
    token (``posedge``/``negedge``) on a single signal — the clock.
-   Sync chains never have an async reset and a single stage at the
-   same level of granularity.
 2. The block contains exactly one statement: a non-blocking assignment
    ``LHS <= RHS;`` (no ``if``, ``case``, etc.).
 3. The LHS is a bare identifier (not a bit-select; not a hierarchical
    reference). A flop with a bit-select LHS isn't a sync chain stage
    under CDC convention.
+
+The async-reset shape (shape B — ``always_ff @(posedge clk or negedge
+rst_n) if (!rst_n) q <= 1'b0; else q <= d;``, added in xeno#34 so the
+two *insertion* operators find sites on rtl-buddy-cdc's corpus) is
+filtered out by :func:`._chain_helpers.find_stage_spans`, so this
+operator's candidate set is exactly what it was. Deleting a
+reset-bearing stage also removes a reset-domain element, which is a
+different mutation from the depth perturbation this operator claims;
+adopting the shape here would be a deliberate change to the site set
+(and to this module's pinned test counts), not a by-product.
 
 When a chain stage is dropped, downstream stages that read the dropped
 LHS will reference an undriven signal. Pyslang's typical response is

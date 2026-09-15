@@ -19,6 +19,32 @@ reader so it consumes the new register instead.
     always_ff @(posedge dst_clk) sync_meta_xeno_stage_1 <= sync_meta;
     always_ff @(posedge dst_clk) sync_q    <= sync_meta_xeno_stage_1;
 
+**Async-reset stages too** (xeno#34). ``_chain_helpers`` recognises a
+second stage shape — ``always_ff @(posedge clk or negedge rst_n) if
+(!rst_n) q <= 1'b0; else q <= d;``, ``begin``/``end``-wrapped or bare,
+active-high or active-low — and the synthesised sibling copies the
+parent's sensitivity list, reset condition and reset constant verbatim:
+
+.. code-block:: systemverilog
+
+    // parent (rtl-buddy-cdc's corpus shape)
+    always_ff @(posedge dst_clk or negedge rst_n)
+        if (!rst_n) sync_meta <= 1'b0;
+        else        sync_meta <= src_q;
+
+    // mutant (site = stage `sync_meta`)
+    always_ff @(posedge dst_clk or negedge rst_n)
+        if (!rst_n) sync_meta <= 1'b0;
+        else        sync_meta <= src_q;
+    logic sync_meta_xeno_stage_1;
+    always_ff @(posedge dst_clk or negedge rst_n)
+        if (!rst_n) sync_meta_xeno_stage_1 <= 1'b0;
+        else sync_meta_xeno_stage_1 <= sync_meta;
+
+Copying the reset rather than synthesising a reset-free flop is what
+keeps the new stage in the parent's reset domain, so the mutant differs
+from its parent in chain depth and nothing else.
+
 **Parser layer: Verible CST only** (see the no-straddle rule in
 :mod:`rtl_buddy_xeno.operators`). Stage discovery and the forward walk
 to the reader come from :mod:`._chain_helpers`; emission is a pair of
@@ -84,10 +110,12 @@ def _find_sites(sv: str) -> list[tuple[_chain.SyncStage, _chain.ReaderRef]]:
     Source order (stage position). Three requirements on top of "is a
     recognised stage":
 
-    - the clock sensitivity text was recovered verbatim — this operator
-      has to *emit* that clock into a synthesised block (the
+    - the sensitivity text was recovered verbatim — this operator has
+      to *emit* that sensitivity list into a synthesised block (the
       deletion-side operator has no such need, which is why the shared
-      recogniser keeps the stage);
+      recogniser keeps the stage). For a reset-free stage that text is
+      the clock edge alone; for an async-reset stage it is the whole
+      two-edge list;
     - the LHS's declared type is copyable, because the new register is
       declared with it (see the module docstring's "Type");
     - there is a same-clock, same-module, direct non-blocking reader to
@@ -96,7 +124,7 @@ def _find_sites(sv: str) -> list[tuple[_chain.SyncStage, _chain.ReaderRef]]:
     stages, _cst_root = _chain.find_sync_stages(sv)
     sites: list[tuple[_chain.SyncStage, _chain.ReaderRef]] = []
     for stage in stages:
-        if not stage.clock_edge_text or stage.lhs_type is None:
+        if not stage.sensitivity_text or stage.lhs_type is None:
             continue
         reader = _chain.find_downstream_reader(sv, stage)
         if reader is None:
@@ -114,16 +142,34 @@ def _apply(
     """Emit the mutant: declare + drive the new flop, rewire the reader.
 
     The declaration copies ``stage.lhs_type`` (never ``None`` here —
-    :func:`_find_sites` filters those stages out). Two byte-splices on
-    the parent source. They are applied from the
+    :func:`_find_sites` filters those stages out). The flop copies
+    ``stage.sensitivity_text``, which is the clock edge alone for a
+    reset-free stage and the whole ``posedge clk or negedge rst_n``
+    list for an async-reset one; in the latter case the body becomes
+    the parent's own ``if``/``else``, with the parent's condition and
+    reset constant re-emitted verbatim and the two branch lines
+    indented one level below the block (``insert_after_block`` adds the
+    block's own indent to every line).
+
+    Two byte-splices on the parent source. They are applied from the
     highest offset downwards so the lower one's offsets stay valid —
     and which of the two is higher depends on whether the reader sits
     after the stage (the usual chain order) or before it (legal, and
     exercised by the tests), so both orders are handled explicitly.
     """
     declaration = f"{stage.lhs_type} {new_name};"
-    flop = f"always_ff @({stage.clock_edge_text}) {new_name} <= {stage.lhs_name};"
-    lines = [declaration, flop]
+    if stage.reset_cond_text is None:
+        lines = [
+            declaration,
+            f"always_ff @({stage.sensitivity_text}) {new_name} <= {stage.lhs_name};",
+        ]
+    else:
+        lines = [
+            declaration,
+            f"always_ff @({stage.sensitivity_text})",
+            f"    if ({stage.reset_cond_text}) {new_name} <= {stage.reset_const_text};",
+            f"    else {new_name} <= {stage.lhs_name};",
+        ]
     if reader.start >= stage.block_end:
         mutated = _chain.replace_span(sv, reader.start, reader.end, new_name)
         return _chain.insert_after_block(

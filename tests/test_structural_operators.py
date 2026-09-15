@@ -212,18 +212,20 @@ def _insert_mutants(sv: str) -> list:
 def test_chain_stage_insert_site_count_on_fixture() -> None:
     """Sites = stages that have a same-clock, direct non-blocking reader.
 
-    ``sync_chain_readers.sv`` holds 7 recognised stages (``sync_meta``,
-    ``sync_q``, ``sync_out``, ``flag_meta``, ``lone_q``, ``sg_meta``,
-    ``sg_q``). ``sync_out`` and ``sg_q`` are consumed only by a
-    continuous ``assign`` and ``lone_q`` by nothing at all, so
-    7 - 3 = 4 sites.
+    ``sync_chain_readers.sv`` holds 10 recognised stages: 7 reset-free
+    (``sync_meta``, ``sync_q``, ``sync_out``, ``flag_meta``,
+    ``lone_q``, ``sg_meta``, ``sg_q``) and 3 async-reset ones
+    (``flag_out``, ``rst_meta``, ``rst_q`` — xeno#34). ``sync_out``,
+    ``sg_q`` and ``rst_q`` are consumed only by a continuous
+    ``assign``, ``lone_q`` by nothing at all and ``flag_out`` drives an
+    output nothing re-reads, so 10 - 5 = 5 sites.
     """
     mutants = _insert_mutants(_insert_sv())
-    assert len(mutants) == 4
+    assert len(mutants) == 5
     summaries = " ".join(m.diff_summary for m in mutants)
-    for name in ("sync_meta", "sync_q", "flag_meta", "sg_meta"):
+    for name in ("sync_meta", "sync_q", "flag_meta", "sg_meta", "rst_meta"):
         assert f"after `{name}`" in summaries
-    for name in ("sync_out", "lone_q", "sg_q"):
+    for name in ("sync_out", "lone_q", "sg_q", "rst_q", "flag_out"):
         assert f"after `{name}`" not in summaries
 
 
@@ -525,23 +527,25 @@ def _comb_mutants(sv: str) -> list:
 
 
 def test_comb_between_stages_site_count_matches_chain_stage_insert() -> None:
-    """Same 4 sites as ``CHAIN_STAGE_INSERT`` on the shared fixture.
+    """Same 5 sites as ``CHAIN_STAGE_INSERT`` on the shared fixture.
 
     Both operators need "a stage with a copyable declared type and a
     same-clock, same-module, direct non-blocking reader", so
-    ``sync_meta``, ``sync_q``, ``flag_meta`` and ``sg_meta`` qualify
-    while ``sync_out`` and ``sg_q`` (read only by a continuous
-    ``assign``) and ``lone_q`` (read by nothing) don't.
-    ``CHAIN_STAGE_INSERT`` filters on ``clock_edge_text`` on top of
-    that, but a stage without recoverable clock text can have no reader
-    either, so the two site sets coincide by construction.
+    ``sync_meta``, ``sync_q``, ``flag_meta``, ``sg_meta`` and the
+    async-reset ``rst_meta`` qualify while ``sync_out``, ``sg_q`` and
+    ``rst_q`` (read only by a continuous ``assign``), ``lone_q`` (read
+    by nothing) and ``flag_out`` (drives an output nothing re-reads)
+    don't. ``CHAIN_STAGE_INSERT`` filters on ``sensitivity_text`` on
+    top of that, but a stage without recoverable sensitivity text can
+    have no reader either, so the two site sets coincide by
+    construction.
     """
     mutants = _comb_mutants(_insert_sv())
-    assert len(mutants) == 4 == len(_insert_mutants(_insert_sv()))
+    assert len(mutants) == 5 == len(_insert_mutants(_insert_sv()))
     summaries = " ".join(m.diff_summary for m in mutants)
-    for name in ("sync_meta", "sync_q", "flag_meta", "sg_meta"):
+    for name in ("sync_meta", "sync_q", "flag_meta", "sg_meta", "rst_meta"):
         assert f"between `{name}`" in summaries
-    for name in ("sync_out", "lone_q", "sg_q"):
+    for name in ("sync_out", "lone_q", "sg_q", "rst_q", "flag_out"):
         assert f"between `{name}`" not in summaries
 
 
@@ -770,4 +774,301 @@ def test_comb_between_stages_copies_port_declared_type() -> None:
     assert len(mutants) == 1
     assert "wire [7:0] q_xeno_comb_1 = ~q;" in mutants[0].sv
     assert "r <= q_xeno_comb_1;" in mutants[0].sv
+    assert _elaborates(mutants[0].sv)
+
+
+# --- async-reset stage shape (xeno#34) ---------------------------------------
+#
+# rtl-buddy-cdc's fuzz corpus writes 20 of its 35 canonical parents with
+# an async-reset stage rather than the bare single-statement flop, so
+# without this shape both insertion operators find almost no sites
+# there. The recogniser lives in `_chain_helpers` (shape B); these tests
+# pin what it accepts, what it refuses, and what the two operators emit
+# for it.
+
+# Bare form — the `if`/`else` is the always_ff's only statement, no
+# `begin`/`end`. `s1` has a reset-bearing reader (`q`); `q` has none.
+_RESET_BARE_SV = (
+    "module m (input logic clk, input logic rst_n, input logic d,\n"
+    "          output logic q);\n"
+    "  logic s1;\n"
+    "  always_ff @(posedge clk or negedge rst_n)\n"
+    "    if (!rst_n) s1 <= 1'b0;\n"
+    "    else        s1 <= d;\n"
+    "  always_ff @(posedge clk or negedge rst_n)\n"
+    "    if (!rst_n) q <= 1'b0;\n"
+    "    else        q <= s1;\n"
+    "endmodule\n"
+)
+
+# Same chain, `begin`/`end`-wrapped — the other spelling the corpus uses.
+_RESET_BEGIN_END_SV = (
+    "module m (input logic clk, input logic rst_n, input logic d,\n"
+    "          output logic q);\n"
+    "  logic s1;\n"
+    "  always_ff @(posedge clk or negedge rst_n) begin\n"
+    "    if (!rst_n) s1 <= 1'b0;\n"
+    "    else        s1 <= d;\n"
+    "  end\n"
+    "  always_ff @(posedge clk or negedge rst_n) begin\n"
+    "    if (!rst_n) q <= 1'b0;\n"
+    "    else        q <= s1;\n"
+    "  end\n"
+    "endmodule\n"
+)
+
+# Active-high reset: `posedge rst` on the sensitivity list, `if (rst)`
+# in the condition. Both have to survive into the synthesised flop.
+_RESET_ACTIVE_HIGH_SV = (
+    "module m (input logic clk, input logic rst, input logic d,\n"
+    "          output logic q);\n"
+    "  logic s1;\n"
+    "  always_ff @(posedge clk or posedge rst)\n"
+    "    if (rst) s1 <= 1'b0;\n"
+    "    else     s1 <= d;\n"
+    "  always_ff @(posedge clk or posedge rst)\n"
+    "    if (rst) q <= 1'b0;\n"
+    "    else     q <= s1;\n"
+    "endmodule\n"
+)
+
+# rtl-buddy-cdc's cdc002 corpus shape verbatim: a two-clock crossing
+# whose three stages are all reset-bearing.
+_CDC002_SV = (
+    "module cdc002_two_ff_sync (\n"
+    "    input  logic src_clk,\n"
+    "    input  logic dst_clk,\n"
+    "    input  logic rst_n,\n"
+    "    input  logic d,\n"
+    "    output logic sync_q\n"
+    ");\n"
+    "    logic src_q, sync_meta;\n"
+    "    always_ff @(posedge src_clk or negedge rst_n)\n"
+    "        if (!rst_n) src_q <= 1'b0;\n"
+    "        else        src_q <= d;\n"
+    "    always_ff @(posedge dst_clk or negedge rst_n)\n"
+    "        if (!rst_n) sync_meta <= 1'b0;\n"
+    "        else        sync_meta <= src_q;\n"
+    "    always_ff @(posedge dst_clk or negedge rst_n)\n"
+    "        if (!rst_n) sync_q <= 1'b0;\n"
+    "        else        sync_q <= sync_meta;\n"
+    "endmodule\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "sv"),
+    [("bare", _RESET_BARE_SV), ("begin_end", _RESET_BEGIN_END_SV)],
+)
+def test_chain_stage_insert_reset_stage_yields_one_site(label: str, sv: str) -> None:
+    """A 2-stage async-reset chain has exactly one insertion site.
+
+    Both spellings — the bare ``if``/``else`` and the
+    ``begin``/``end``-wrapped one — are the same shape to the
+    recogniser, so both give the site on the head stage and none on the
+    tail (nothing reads ``q``).
+    """
+    mutants = _insert_mutants(sv)
+    assert len(mutants) == 1, label
+    assert "after `s1`" in mutants[0].diff_summary
+    assert _elaborates(mutants[0].sv)
+
+
+@pytest.mark.parametrize(
+    ("label", "sv"),
+    [("bare", _RESET_BARE_SV), ("begin_end", _RESET_BEGIN_END_SV)],
+)
+def test_comb_between_stages_reset_stage_yields_one_site(label: str, sv: str) -> None:
+    """Same site set for the comb operator, and the same emitted net.
+
+    The reader's rewritten span is its ``else``-branch right-hand side:
+    the reset branch assigns a constant, so it never matches the
+    stage's Q.
+    """
+    mutants = _comb_mutants(sv)
+    assert len(mutants) == 1, label
+    assert "between `s1`" in mutants[0].diff_summary
+    assert "wire s1_xeno_comb_1 = ~s1;" in mutants[0].sv
+    assert "q <= s1_xeno_comb_1;" in mutants[0].sv
+    assert "if (!rst_n) q <= 1'b0;" in mutants[0].sv
+    assert _elaborates(mutants[0].sv)
+
+
+def test_chain_stage_insert_reset_stage_emits_the_four_line_shape() -> None:
+    """The synthesised flop is exactly declaration + block + two branches.
+
+    Pinned verbatim because the whole point of the shape is that the
+    new stage lands in the *parent's* reset domain: same sensitivity
+    list, same condition, same reset constant, one level of extra
+    indent on the branch lines.
+    """
+    [mutant] = _insert_mutants(_RESET_BARE_SV)
+    assert (
+        "  logic s1_xeno_stage_1;\n"
+        "  always_ff @(posedge clk or negedge rst_n)\n"
+        "      if (!rst_n) s1_xeno_stage_1 <= 1'b0;\n"
+        "      else s1_xeno_stage_1 <= s1;\n"
+    ) in mutant.sv
+    # The reader is rewired through the new stage; the parent stage
+    # still drives its own Q off `d`.
+    assert "else        q <= s1_xeno_stage_1;" in mutant.sv
+    assert "else        s1 <= d;" in mutant.sv
+
+
+def test_chain_stage_insert_reset_stage_copies_active_high_reset() -> None:
+    """``posedge rst`` / ``if (rst)`` survive verbatim into the new flop."""
+    [mutant] = _insert_mutants(_RESET_ACTIVE_HIGH_SV)
+    assert "always_ff @(posedge clk or posedge rst)\n" in mutant.sv
+    assert "if (rst) s1_xeno_stage_1 <= 1'b0;" in mutant.sv
+    assert "else s1_xeno_stage_1 <= s1;" in mutant.sv
+    assert "q <= s1_xeno_stage_1;" in mutant.sv
+    assert _elaborates(mutant.sv)
+
+
+def test_reset_stage_with_non_constant_reset_branch_is_not_a_site() -> None:
+    """``if (!rst_n) s1 <= init;`` — the reset branch names a signal.
+
+    The recogniser has no elaboration, so it will not vouch for a reset
+    value it cannot read off the source as a literal.
+    """
+    sv = (
+        "module m (input logic clk, input logic rst_n, input logic d,\n"
+        "          input logic init, output logic q);\n"
+        "  logic s1;\n"
+        "  always_ff @(posedge clk or negedge rst_n)\n"
+        "    if (!rst_n) s1 <= init;\n"
+        "    else        s1 <= d;\n"
+        "  always_ff @(posedge clk or negedge rst_n)\n"
+        "    if (!rst_n) q <= 1'b0;\n"
+        "    else        q <= s1;\n"
+        "endmodule\n"
+    )
+    assert _insert_mutants(sv) == []
+    assert _comb_mutants(sv) == []
+
+
+def test_reset_stage_with_a_third_statement_is_not_a_site() -> None:
+    """An ``if``/``else`` plus a second statement is not a chain stage."""
+    sv = (
+        "module m (input logic clk, input logic rst_n, input logic d,\n"
+        "          output logic q, output logic t);\n"
+        "  logic s1;\n"
+        "  always_ff @(posedge clk or negedge rst_n) begin\n"
+        "    if (!rst_n) s1 <= 1'b0;\n"
+        "    else        s1 <= d;\n"
+        "    t <= d;\n"
+        "  end\n"
+        "  always_ff @(posedge clk or negedge rst_n)\n"
+        "    if (!rst_n) q <= 1'b0;\n"
+        "    else        q <= s1;\n"
+        "endmodule\n"
+    )
+    assert _insert_mutants(sv) == []
+    assert _comb_mutants(sv) == []
+
+
+def test_two_edge_block_with_unrelated_condition_is_not_a_site() -> None:
+    """Neither edge appears in the ``if`` condition — which edge is the
+    reset is then unknowable, so the block is not a stage."""
+    sv = (
+        "module m (input logic clk, input logic rst_n, input logic en,\n"
+        "          input logic d, output logic q);\n"
+        "  logic s1;\n"
+        "  always_ff @(posedge clk or negedge rst_n)\n"
+        "    if (en) s1 <= 1'b0;\n"
+        "    else    s1 <= d;\n"
+        "  always_ff @(posedge clk or negedge rst_n)\n"
+        "    if (!rst_n) q <= 1'b0;\n"
+        "    else        q <= s1;\n"
+        "endmodule\n"
+    )
+    assert _insert_mutants(sv) == []
+    assert _comb_mutants(sv) == []
+
+
+def test_reset_bearing_stage_feeds_a_reset_free_reader() -> None:
+    """The same-clock check compares *clocks*, so the reset on one side
+    of a chain edge and not the other is still a chain edge."""
+    sv = (
+        "module m (input logic clk, input logic rst_n, input logic d,\n"
+        "          output logic q);\n"
+        "  logic s1, s2;\n"
+        "  always_ff @(posedge clk or negedge rst_n)\n"
+        "    if (!rst_n) s1 <= 1'b0;\n"
+        "    else        s1 <= d;\n"
+        "  always_ff @(posedge clk) s2 <= s1;\n"
+        "  assign q = s2;\n"
+        "endmodule\n"
+    )
+    mutants = _insert_mutants(sv)
+    assert len(mutants) == 1
+    assert "after `s1`" in mutants[0].diff_summary
+    assert "s2 <= s1_xeno_stage_1;" in mutants[0].sv
+    assert _elaborates(mutants[0].sv)
+
+
+def test_reset_free_stage_feeds_a_reset_bearing_reader() -> None:
+    """...and the reverse direction, which is the ``flag_meta`` case the
+    shared fixture has carried since the operator shipped."""
+    sv = (
+        "module m (input logic clk, input logic rst_n, input logic d,\n"
+        "          output logic q);\n"
+        "  logic s1, s2;\n"
+        "  always_ff @(posedge clk) s1 <= d;\n"
+        "  always_ff @(posedge clk or negedge rst_n)\n"
+        "    if (!rst_n) s2 <= 1'b0;\n"
+        "    else        s2 <= s1;\n"
+        "  assign q = s2;\n"
+        "endmodule\n"
+    )
+    mutants = _insert_mutants(sv)
+    assert len(mutants) == 1
+    assert "after `s1`" in mutants[0].diff_summary
+    assert "else        s2 <= s1_xeno_stage_1;" in mutants[0].sv
+    assert _elaborates(mutants[0].sv)
+
+
+def test_sync_chain_depth_perturb_ignores_reset_bearing_stages() -> None:
+    """The deletion operator's site set is unchanged by xeno#34.
+
+    ``find_stage_spans`` filters the async-reset shape out explicitly,
+    so a corpus parent written entirely in that shape yields no
+    depth-perturb mutants — exactly as before the shape existed.
+    """
+    mutants = list(
+        Mutator.from_sv(_RESET_BARE_SV).generate(
+            [MutationKind.SYNC_CHAIN_DEPTH_PERTURB], count=999
+        )
+    )
+    assert mutants == []
+
+
+def test_chain_stage_insert_on_the_cdc002_corpus_shape() -> None:
+    """The measured gap from xeno#34, reproduced end to end.
+
+    Three reset-bearing stages, two clocks. Only ``sync_meta`` is a
+    site: ``src_q`` is clocked on ``src_clk`` and its only consumer
+    ``sync_meta`` is on ``dst_clk`` (a crossing, not a chain edge), and
+    ``sync_q`` has no non-blocking reader at all.
+    """
+    mutants = _insert_mutants(_CDC002_SV)
+    assert len(mutants) == 1
+    assert "after `sync_meta`" in mutants[0].diff_summary
+    assert (
+        "    logic sync_meta_xeno_stage_1;\n"
+        "    always_ff @(posedge dst_clk or negedge rst_n)\n"
+        "        if (!rst_n) sync_meta_xeno_stage_1 <= 1'b0;\n"
+        "        else sync_meta_xeno_stage_1 <= sync_meta;\n"
+    ) in mutants[0].sv
+    assert "else        sync_q <= sync_meta_xeno_stage_1;" in mutants[0].sv
+    assert _elaborates(mutants[0].sv)
+
+
+def test_comb_between_stages_on_the_cdc002_corpus_shape() -> None:
+    """Same single site for the comb operator, same corpus parent."""
+    mutants = _comb_mutants(_CDC002_SV)
+    assert len(mutants) == 1
+    assert "between `sync_meta`" in mutants[0].diff_summary
+    assert "wire sync_meta_xeno_comb_1 = ~sync_meta;" in mutants[0].sv
+    assert "else        sync_q <= sync_meta_xeno_comb_1;" in mutants[0].sv
     assert _elaborates(mutants[0].sv)

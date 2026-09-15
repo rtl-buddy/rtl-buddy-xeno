@@ -67,8 +67,8 @@ for the full table including MCY-expressibility.
 | `ATTRIBUTE_TOGGLE`              | implemented | cdc#221       | regex (no extras)          | CDC-002 / -003 / -010 / -019, RDC-001 / -007 (per attribute) |
 | `ASSIGN_DROP`                   | implemented | rtl_buddy#206 | Verible + slang            | property survival on the LHS                               |
 | `SYNC_CHAIN_DEPTH_PERTURB`      | implemented | cdc#221       | Verible                    | CDC-002 / -018 (rationale only — no positive claim)        |
-| `CHAIN_STAGE_INSERT`            | implemented | cdc#221       | Verible                    | CDC-018 (rationale only — no positive claim)               |
-| `COMB_BETWEEN_STAGES`           | implemented | cdc#221       | Verible                    | CDC-014 (rationale only — no positive claim)               |
+| `CHAIN_STAGE_INSERT`            | implemented | cdc#221       | Verible (async-reset stages too) | CDC-018 (rationale only — no positive claim)         |
+| `COMB_BETWEEN_STAGES`           | implemented | cdc#221       | Verible (async-reset stages too) | CDC-014 (rationale only — no positive claim)         |
 | `BIT_EXTRACT_PERMUTE`           | implemented | cdc#221       | Verible                    | CDC-019 / -020 (rationale only — no positive claim)        |
 | `RESET_POLARITY_FLIP`           | implemented | cdc#221       | Verible (+ optional slang) | RDC-007 (rationale only — no positive claim)               |
 | `RESET_FANIN_MERGE`             | implemented | cdc#221       | Verible (name-heuristic resets) | RDC-005 (rationale only — no positive claim)          |
@@ -77,6 +77,17 @@ for the full table including MCY-expressibility.
 | `COND_NEGATE`                   | implemented | rtl_buddy#206 | Verible                    | property survival                                          |
 | `COND_CONST`                    | implemented | rtl_buddy#206 | Verible                    | property survival                                          |
 | `PORT_BINDING_SWAP`             | implemented | rtl_buddy#206 | Verible                    | property survival + maybe CDC                              |
+
+`CHAIN_STAGE_INSERT` and `COMB_BETWEEN_STAGES` recognise two sync-stage
+shapes ([xeno#34](https://github.com/rtl-buddy/rtl-buddy-xeno/issues/34)):
+the single-clock, single-statement flop `always_ff @(posedge clk) q <= d;`
+and the **async-reset** stage
+`always_ff @(posedge clk or negedge rst_n) if (!rst_n) q <= 1'b0; else q <= d;`
+— `begin`/`end`-wrapped or bare, active-low or active-high, with the
+reset branch assigning a literal constant. A synthesised stage copies
+the parent's sensitivity list, reset condition and reset constant
+verbatim, so it lands in the parent's reset domain.
+`SYNC_CHAIN_DEPTH_PERTURB` deliberately keeps the reset-free site set.
 
 All fourteen kinds are implemented — `IMPLEMENTED_KINDS == frozenset(MutationKind)`,
 no operator raises `NotImplementedError`. The CDC rule-id predictions

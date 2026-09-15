@@ -19,6 +19,17 @@ stages) looks for.
     wire [7:0] sync_meta_xeno_comb_1 = ~sync_meta;
     always_ff @(posedge dst_clk) sync_q    <= sync_meta_xeno_comb_1;
 
+**Async-reset stages too** (xeno#34). ``_chain_helpers`` recognises a
+second stage shape — ``always_ff @(posedge clk or negedge rst_n) if
+(!rst_n) q <= 1'b0; else q <= d;``, ``begin``/``end``-wrapped or bare,
+active-high or active-low. Nothing about the emission changes: the
+interposed net is the same ``wire ... = ~<lhs>;`` line after the block,
+and the reader's rewritten span is its ``else``-branch right-hand side
+(the reset branch assigns a constant, so it never matches the stage's
+Q). The reset-bearing shape is what rtl-buddy-cdc's fuzz corpus writes
+for most of its parents, so recognising it is what gives CDC-014 sites
+outside the handful of reset-free templates.
+
 **Parser layer: Verible CST only** (see the no-straddle rule in
 :mod:`rtl_buddy_xeno.operators`). Stage discovery and the forward walk
 to the reader come from :mod:`._chain_helpers`; emission is a pair of
@@ -37,7 +48,7 @@ single span to rewrite. A different-clock consumer is a crossing, not
 the next link of this chain.
 
 The site set is therefore exactly ``CHAIN_STAGE_INSERT``'s: the sibling
-also filters on ``clock_edge_text``, but a stage with no recoverable
+also filters on ``sensitivity_text``, but a stage with no recoverable
 clock text can have no reader either (the reader's clock is matched
 against it), so that filter is implied here rather than absent.
 
@@ -97,7 +108,7 @@ def _find_sites(sv: str) -> list[tuple[_chain.SyncStage, _chain.ReaderRef]]:
     net is built from it (see the module docstring's "Type"), and there
     is a same-clock, same-module, direct non-blocking reader whose
     right-hand side the net can be spliced onto. Unlike
-    ``CHAIN_STAGE_INSERT`` there is no explicit ``clock_edge_text``
+    ``CHAIN_STAGE_INSERT`` there is no explicit ``sensitivity_text``
     filter — nothing clocked gets emitted here — but the reader search
     matches the reader's edge against the stage's, so a stage with no
     recoverable clock text has no reader anyway.

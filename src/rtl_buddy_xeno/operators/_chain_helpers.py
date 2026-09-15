@@ -16,16 +16,54 @@ no-straddle rule in :mod:`rtl_buddy_xeno.operators`): site discovery
 via :mod:`rtl_buddy_xeno.cst`, emission via byte-splices on the
 original source string. No pyslang.
 
-The "looks like a sync-chain stage" heuristic (unchanged from the
-shape ``SYNC_CHAIN_DEPTH_PERTURB`` shipped with):
+Two stage *shapes* are recognised (xeno#34).
+
+**A — the reset-free stage** (the shape ``SYNC_CHAIN_DEPTH_PERTURB``
+shipped with):
 
 1. The ``always_ff`` block's sensitivity list has exactly one edge
    token (``posedge`` / ``negedge``) on a single signal — the clock.
-   Sync chains never carry an async reset on the stage itself.
 2. The block contains exactly one statement: a non-blocking assignment
    ``LHS <= RHS;`` (no ``if``, ``case``, loops, blocking assignments).
 3. The LHS is a bare identifier (not a bit-select, not a hierarchical
    reference).
+
+**B — the async-reset stage** (``begin``/``end``-wrapped or bare):
+
+.. code-block:: systemverilog
+
+    always_ff @(posedge dst_clk or negedge rst_n)
+        if (!rst_n) sync_meta <= 1'b0;
+        else        sync_meta <= src_q;
+
+1. The sensitivity list has exactly **two** edge-led event
+   expressions.
+2. The body — after unwrapping at most one ``begin``/``end`` — is
+   exactly one ``if``/``else``; each branch is exactly one
+   non-blocking assignment, and both assign the *same bare
+   identifier*. A third statement anywhere disqualifies the block.
+3. The ``if`` branch assigns a **constant**: an expression that names
+   no identifier at all and contains at least one number literal.
+   That admits ``1'b0``, ``'0``, ``8'h00`` and replications of a
+   literal (``{8{1'b0}}``), and deliberately rejects
+   parameter-width spellings such as ``{WIDTH{1'b0}}`` — a name is a
+   name and the recogniser stays inside the CST.
+4. Exactly one of the two sensitivity identifiers appears in the
+   ``if`` condition; that edge is the **reset**, the other is the
+   **clock**. Neither (``if (en) ...``) or both (``if (!rst_n &&
+   clk)``) is ambiguous and disqualifies the block.
+5. Either the reset identifier satisfies
+   :func:`._reset_names.is_reset_name`, **or** the condition is
+   exactly ``<rst>`` / ``!<rst>`` / ``~<rst>``. Either signal alone
+   suffices: the name heuristic catches ``if (soft_clear)`` on an
+   ``rst_n``-named edge, and the bare-polarity form catches a
+   vendor-spelled reset (``por_ni``) the name table does not list.
+
+Shape B is what rtl-buddy-cdc's fuzz corpus writes for 20 of its 35
+canonical parents, so without it ``CHAIN_STAGE_INSERT`` and
+``COMB_BETWEEN_STAGES`` find almost no sites there (xeno#34).
+``SYNC_CHAIN_DEPTH_PERTURB`` keeps the *shape A only* site set — see
+:func:`find_stage_spans`.
 
 A recognised stage additionally carries the two facts the two
 *insertion* operators need and the deletion operator does not: the
@@ -46,9 +84,11 @@ from pathlib import Path
 from typing import Any
 
 from rtl_buddy_xeno import cst as _cst
+from rtl_buddy_xeno.operators import _reset_names
 
 __all__ = [
     "ReaderRef",
+    "ResetStageShape",
     "SyncStage",
     "byte_to_line_col",
     "declared_type",
@@ -60,6 +100,7 @@ __all__ = [
     "insert_after_block",
     "is_single_clock_sensitivity",
     "replace_span",
+    "reset_bearing_stage",
     "single_nonblocking",
     "sv_to_tempfile",
 ]
@@ -307,6 +348,254 @@ def _clock_edge_text(sv: str, always_ff_node: dict) -> str:
     return text.strip() if text is not None else ""
 
 
+# --- async-reset stage shape (xeno#34) ---------------------------------------
+
+
+@dataclass(frozen=True)
+class ResetStageShape:
+    """The extra facts a *shape B* (async-reset) stage carries.
+
+    ``sensitivity_text`` is the whole ``@(...)`` interior verbatim
+    (``posedge dst_clk or negedge rst_n``), ``clock_edge_text`` the
+    clock edge alone (``posedge dst_clk``) so the reader's same-clock
+    check keeps comparing clocks and never resets, ``reset_cond_text``
+    the ``if (...)`` condition verbatim (``!rst_n``) and
+    ``reset_const_text`` the reset branch's right-hand side verbatim
+    (``1'b0``). An operator that synthesises a sibling flop re-emits
+    all three unchanged, so the new stage carries exactly the parent's
+    reset.
+    """
+
+    lhs_name: str
+    block_start: int
+    block_end: int
+    sensitivity_text: str
+    clock_edge_text: str
+    reset_cond_text: str
+    reset_const_text: str
+
+
+def _event_control(always_ff_node: dict) -> dict | None:
+    """The ``kEventControl`` an ``always_ff`` opens with, or ``None``.
+
+    Scoped lookup (immediate children only) so an intra-assignment
+    event control buried in the body can never be mistaken for the
+    block's sensitivity list.
+    """
+    timing = _first_direct(always_ff_node, "kProceduralTimingControlStatement")
+    if timing is None:
+        return None
+    return _first_direct(timing, "kEventControl")
+
+
+def _guarded_statement(always_ff_node: dict) -> dict | None:
+    """The single statement the event control guards, ``begin``/``end`` peeled.
+
+    Verible lays an ``always_ff`` out as ``kAlwaysStatement >
+    kProceduralTimingControlStatement > [kEventControl, <statement>]``
+    (probed with ``verible-verilog-syntax --printtree``). The
+    ``<statement>`` is either the statement itself or a ``kSeqBlock``
+    wrapping a ``kBlockItemStatementList``; exactly one statement in
+    that list is unwrapped, anything else returns ``None``. That is
+    what makes "an ``if``/``else`` plus a third statement" fall out of
+    the site set structurally rather than by tag-counting.
+    """
+    timing = _first_direct(always_ff_node, "kProceduralTimingControlStatement")
+    if timing is None:
+        return None
+    children = _direct_children(timing)
+    index = next(
+        (i for i, c in enumerate(children) if c.get("tag") == "kEventControl"), None
+    )
+    if index is None:
+        return None
+    rest = children[index + 1 :]
+    if len(rest) != 1:
+        return None
+    body = rest[0]
+    if body.get("tag") != "kSeqBlock":
+        return body
+    statements = _first_direct(body, "kBlockItemStatementList")
+    if statements is None:
+        return None
+    inner = _direct_children(statements)
+    return inner[0] if len(inner) == 1 else None
+
+
+def _identifier_leaves(node: Any) -> list[str]:
+    """Every ``SymbolIdentifier`` leaf text under ``node``, in tree order."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        if node.get("tag") == "SymbolIdentifier" and node.get("text"):
+            found.append(str(node["text"]))
+        for child in node.get("children", []) or []:
+            found.extend(_identifier_leaves(child))
+    elif isinstance(node, list):
+        for child in node:
+            found.extend(_identifier_leaves(child))
+    return found
+
+
+def _is_constant_expression(node: dict) -> bool:
+    """True iff ``node`` is a literal constant this module will re-emit.
+
+    Deliberately blunt and conservative: an expression that names *no*
+    identifier and holds at least one ``kNumber`` leaf. ``1'b0``,
+    ``'0``, ``8'h00`` and ``{8{1'b0}}`` pass; ``{WIDTH{1'b0}}``,
+    ``RESET_VALUE`` and anything reading a signal do not, even though
+    a parameter is constant too — the recogniser has no elaboration
+    and a name it cannot resolve is a name it will not vouch for.
+    """
+    if _first_identifier_leaf(node) is not None:
+        return False
+    return bool(_cst.walk_subtrees(node, "kNumber"))
+
+
+def _bare_lpvalue_name(sv: str, nb_assign: dict) -> str | None:
+    """The assignment's LHS when it is a *bare* identifier, else ``None``.
+
+    "Bare" is checked textually: the whole ``kLPValue`` span has to
+    normalise to the single identifier it contains, so ``q[3]``,
+    ``q.f`` and ``{a, b}`` are all rejected.
+    """
+    lpvalue = _first_direct(nb_assign, "kLPValue")
+    if lpvalue is None:
+        return None
+    name = first_identifier(lpvalue)
+    text = _node_text(sv, lpvalue)
+    if name is None or text is None or _normalise(text) != name:
+        return None
+    return name
+
+
+def _single_nonblocking_child(branch: dict | None) -> dict | None:
+    """The one ``kNonblockingAssignmentStatement`` under an if/else branch."""
+    if branch is None:
+        return None
+    children = _direct_children(branch)
+    if len(children) != 1:
+        return None
+    child = children[0]
+    return child if child.get("tag") == "kNonblockingAssignmentStatement" else None
+
+
+def _sensitivity_text(sv: str, always_ff_node: dict) -> str:
+    """The whole ``@(...)`` interior verbatim, or ``""``."""
+    event_control = _event_control(always_ff_node)
+    if event_control is None:
+        return ""
+    listing = _first_direct(
+        _first_direct(event_control, "kParenGroup") or {}, "kEventExpressionList"
+    )
+    text = _node_text(sv, listing) if listing is not None else None
+    return text.strip() if text is not None else ""
+
+
+def _reset_condition_ok(reset_name: str, condition_text: str) -> bool:
+    """Either signal suffices — a reset *name* or a bare-polarity condition.
+
+    ``is_reset_name`` alone would miss a vendor-spelled reset the name
+    table does not list; the bare-polarity form alone would miss
+    ``if (soft_clear)`` guarding a ``negedge rst_n`` edge. Accepting
+    either keeps both idioms in the corpus visible while still
+    refusing a two-edge block whose condition is a general expression
+    on a signal that is neither named like a reset nor tested plainly.
+    """
+    if _reset_names.is_reset_name(reset_name):
+        return True
+    # ``if (! por_ni)`` is the same condition as ``if (!por_ni)``: SV
+    # allows whitespace between a unary operator and its operand, and
+    # ``_normalise`` keeps one space there, so close that gap before
+    # the exact comparison (review on xeno#35).
+    normalised = re.sub(r"^([!~])\s+", r"\1", _normalise(condition_text))
+    return normalised in {
+        reset_name,
+        f"!{reset_name}",
+        f"~{reset_name}",
+    }
+
+
+def reset_bearing_stage(sv: str, always_ff_node: dict) -> ResetStageShape | None:
+    """Recognise *shape B* — the async-reset sync stage (xeno#34).
+
+    Returns ``None`` for anything that is not exactly the shape the
+    module docstring spells out. The caller tries the reset-free shape
+    first; the two are mutually exclusive by construction (shape A
+    forbids a ``kConditionalStatement``, shape B requires one).
+    """
+    event_control = _event_control(always_ff_node)
+    if event_control is None:
+        return None
+    edges = [
+        ev
+        for ev in _cst.walk_subtrees(event_control, "kEventExpression")
+        if _leads_with_edge(ev)
+    ]
+    if len(edges) != 2:
+        return None
+
+    conditional = _guarded_statement(always_ff_node)
+    if conditional is None or conditional.get("tag") != "kConditionalStatement":
+        return None
+    if_clause = _first_direct(conditional, "kIfClause")
+    else_clause = _first_direct(conditional, "kElseClause")
+    if if_clause is None or else_clause is None:
+        return None
+    header = _first_direct(if_clause, "kIfHeader")
+    if header is None:
+        return None
+    paren = _first_direct(header, "kParenGroup")
+    condition = _first_direct(paren, "kExpression") if paren is not None else None
+    if condition is None:
+        return None
+
+    reset_assign = _single_nonblocking_child(_first_direct(if_clause, "kIfBody"))
+    data_assign = _single_nonblocking_child(_first_direct(else_clause, "kElseBody"))
+    if reset_assign is None or data_assign is None:
+        return None
+    lhs_name = _bare_lpvalue_name(sv, reset_assign)
+    if lhs_name is None or _bare_lpvalue_name(sv, data_assign) != lhs_name:
+        return None
+
+    reset_rhs = _rhs_expression(reset_assign)
+    if reset_rhs is None or not _is_constant_expression(reset_rhs):
+        return None
+    reset_const_text = _node_text(sv, reset_rhs)
+    condition_text = _node_text(sv, condition)
+    if reset_const_text is None or condition_text is None:
+        return None
+
+    condition_names = set(_identifier_leaves(condition))
+    matched = [ev for ev in edges if (first_identifier(ev) or "") in condition_names]
+    if len(matched) != 1:
+        return None
+    reset_edge = matched[0]
+    clock_edge = edges[0] if edges[1] is reset_edge else edges[1]
+    reset_name = first_identifier(reset_edge)
+    if reset_name is None:
+        return None
+    if not _reset_condition_ok(reset_name, condition_text):
+        return None
+
+    clock_edge_text = _node_text(sv, clock_edge)
+    sensitivity_text = _sensitivity_text(sv, always_ff_node)
+    if not clock_edge_text or not sensitivity_text:
+        return None
+    try:
+        block_start, block_end = _cst.node_span(always_ff_node)
+    except ValueError:
+        return None
+    return ResetStageShape(
+        lhs_name=lhs_name,
+        block_start=block_start,
+        block_end=block_end,
+        sensitivity_text=sensitivity_text,
+        clock_edge_text=clock_edge_text.strip(),
+        reset_cond_text=condition_text.strip(),
+        reset_const_text=reset_const_text.strip(),
+    )
+
+
 # --- declared-type lookup ----------------------------------------------------
 
 # The data types an insertion operator is willing to copy onto a
@@ -462,17 +751,30 @@ def declared_type(sv: str, module_node: dict, name: str) -> str | None:
 
 @dataclass(frozen=True)
 class SyncStage:
-    """One recognised sync-chain stage.
+    """One recognised sync-chain stage, of either shape.
 
     ``block_start`` / ``block_end`` are the byte span of the whole
-    ``always_ff @(...) LHS <= RHS;`` construct, ``lhs_name`` the stage's
-    Q name, ``clock_edge_text`` the literal sensitivity text (e.g.
-    ``posedge dst_clk``, empty when it couldn't be derived), ``node``
+    ``always_ff`` construct, ``lhs_name`` the stage's Q name, ``node``
     the ``kAlwaysStatement`` CST subtree the stage was recognised from,
     ``module_node`` the innermost ``kModuleDeclaration`` containing it
     (``None`` when the stage is not inside a module — an ``interface``
     body, say) and ``lhs_type`` the stage LHS's copyable declared type
     (``None`` when :func:`declared_type` declines; see there).
+
+    The sensitivity trio:
+
+    - ``clock_edge_text`` — the **clock** edge alone (e.g.
+      ``posedge dst_clk``), empty when it couldn't be derived. Always
+      the clock, never the reset, so :func:`find_downstream_reader`'s
+      same-clock check compares clocks and a reset-bearing stage can
+      feed a reset-free reader and the reverse.
+    - ``sensitivity_text`` — the whole ``@(...)`` interior verbatim
+      (``posedge dst_clk or negedge rst_n``). For a reset-free stage
+      this is exactly ``clock_edge_text``.
+    - ``reset_cond_text`` / ``reset_const_text`` — the ``if (...)``
+      condition and the reset branch's right-hand side, verbatim; both
+      ``None`` for a reset-free stage. ``reset_cond_text is None`` is
+      the canonical "is this shape A?" test.
     """
 
     block_start: int
@@ -482,6 +784,9 @@ class SyncStage:
     node: dict
     module_node: dict | None
     lhs_type: str | None
+    sensitivity_text: str = ""
+    reset_cond_text: str | None = None
+    reset_const_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -529,12 +834,31 @@ def find_sync_stages(sv: str) -> tuple[list[SyncStage], dict]:
     stages: list[SyncStage] = []
     seen: set[tuple[int, int]] = set()
     for always_ff in _cst.walk_subtrees(cst_root, "kAlwaysStatement"):
-        if not is_single_clock_sensitivity(always_ff):
+        # Shape A (reset-free) first, then shape B (async reset). The
+        # two are mutually exclusive: A forbids a conditional, B needs
+        # one.
+        single = (
+            single_nonblocking(always_ff)
+            if is_single_clock_sensitivity(always_ff)
+            else None
+        )
+        reset_shape = reset_bearing_stage(sv, always_ff) if single is None else None
+        if single is not None:
+            lhs_name, block_start, block_end = single
+            clock_edge_text = _clock_edge_text(sv, always_ff)
+            sensitivity_text = clock_edge_text
+            reset_cond_text: str | None = None
+            reset_const_text: str | None = None
+        elif reset_shape is not None:
+            lhs_name = reset_shape.lhs_name
+            block_start = reset_shape.block_start
+            block_end = reset_shape.block_end
+            clock_edge_text = reset_shape.clock_edge_text
+            sensitivity_text = reset_shape.sensitivity_text
+            reset_cond_text = reset_shape.reset_cond_text
+            reset_const_text = reset_shape.reset_const_text
+        else:
             continue
-        single = single_nonblocking(always_ff)
-        if single is None:
-            continue
-        lhs_name, block_start, block_end = single
         if (block_start, block_end) in seen:
             continue
         seen.add((block_start, block_end))
@@ -544,7 +868,7 @@ def find_sync_stages(sv: str) -> tuple[list[SyncStage], dict]:
                 block_start=block_start,
                 block_end=block_end,
                 lhs_name=lhs_name,
-                clock_edge_text=_clock_edge_text(sv, always_ff),
+                clock_edge_text=clock_edge_text,
                 node=always_ff,
                 module_node=module_node,
                 lhs_type=(
@@ -552,6 +876,9 @@ def find_sync_stages(sv: str) -> tuple[list[SyncStage], dict]:
                     if module_node is not None
                     else None
                 ),
+                sensitivity_text=sensitivity_text,
+                reset_cond_text=reset_cond_text,
+                reset_const_text=reset_const_text,
             )
         )
     stages.sort(key=lambda s: (s.block_start, s.block_end))
@@ -566,9 +893,23 @@ def find_stage_spans(sv: str) -> list[tuple[int, int, str]]:
     the Q name. Deleting a stage needs neither the enclosing module nor
     the declared type, so that operator's candidate set is unchanged by
     the extra fields :class:`SyncStage` now carries.
+
+    **Reset-free stages only.** The async-reset shape (shape B, added
+    for the two *insertion* operators in xeno#34) is filtered out here
+    on purpose: ``SYNC_CHAIN_DEPTH_PERTURB``'s site set — and the
+    pinned counts of its tests — predate the shape, and deleting a
+    reset-bearing stage leaves a reset-domain hole that is a different
+    mutation from the depth perturbation the operator claims. The
+    shape could be adopted later; doing so is a deliberate change to
+    that operator's candidate set, not a side effect of this filter
+    going away.
     """
     stages, _root = find_sync_stages(sv)
-    return [(s.block_start, s.block_end, s.lhs_name) for s in stages]
+    return [
+        (s.block_start, s.block_end, s.lhs_name)
+        for s in stages
+        if s.reset_cond_text is None
+    ]
 
 
 def _rhs_expression(nb_assign: dict) -> dict | None:

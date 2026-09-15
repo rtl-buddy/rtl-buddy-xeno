@@ -925,6 +925,30 @@ def test_chain_stage_insert_reset_stage_copies_active_high_reset() -> None:
     assert _elaborates(mutant.sv)
 
 
+def test_reset_stage_vendor_name_with_spaced_unary_is_a_site() -> None:
+    """``por_ni`` is outside the reset-name table, so only the bare-polarity
+    fallback can admit it — and ``if (! por_ni)`` must read as ``!por_ni``
+    (SV allows whitespace after a unary operator). Review on xeno#35."""
+    sv = (
+        "module m (input logic clk, input logic por_ni, input logic d,\n"
+        "          output logic q);\n"
+        "  logic s1;\n"
+        "  always_ff @(posedge clk or negedge por_ni)\n"
+        "    if (! por_ni) s1 <= 1'b0;\n"
+        "    else          s1 <= d;\n"
+        "  always_ff @(posedge clk or negedge por_ni)\n"
+        "    if (! por_ni) q <= 1'b0;\n"
+        "    else          q <= s1;\n"
+        "endmodule\n"
+    )
+    [mutant] = _insert_mutants(sv)
+    assert "if (! por_ni) s1_xeno_stage_1 <= 1'b0;" in mutant.sv
+    assert _elaborates(mutant.sv)
+    assert len(_comb_mutants(sv)) == 1
+    # A general expression on a non-reset-named signal is still refused.
+    assert _insert_mutants(sv.replace("! por_ni", "!por_ni && d")) == []
+
+
 def test_reset_stage_with_non_constant_reset_branch_is_not_a_site() -> None:
     """``if (!rst_n) s1 <= init;`` — the reset branch names a signal.
 

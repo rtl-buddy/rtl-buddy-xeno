@@ -503,7 +503,12 @@ def _reset_condition_ok(reset_name: str, condition_text: str) -> bool:
     """
     if _reset_names.is_reset_name(reset_name):
         return True
-    return _normalise(condition_text) in {
+    # ``if (! por_ni)`` is the same condition as ``if (!por_ni)``: SV
+    # allows whitespace between a unary operator and its operand, and
+    # ``_normalise`` keeps one space there, so close that gap before
+    # the exact comparison (review on xeno#35).
+    normalised = re.sub(r"^([!~])\s+", r"\1", _normalise(condition_text))
+    return normalised in {
         reset_name,
         f"!{reset_name}",
         f"~{reset_name}",
